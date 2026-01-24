@@ -1,0 +1,91 @@
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from typing import List, Optional
+from app.core.database import get_db
+from app.schemas.task import TaskCreate, TaskUpdate, TaskResponse, PlanResponse, SummaryResponse, VoiceProcessRequest, VoiceProcessResponse
+from app.services import task_service, ai_service
+from app.api.deps import get_current_user
+from app.models.user import User
+
+router = APIRouter()
+
+@router.post("/", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+async def create_task(
+    task: TaskCreate, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await task_service.create_new_task(db, task, current_user.id)
+
+@router.post("/process-voice", response_model=VoiceProcessResponse)
+async def process_voice(
+    request: VoiceProcessRequest,
+    current_user: User = Depends(get_current_user)
+):
+    return await ai_service.process_voice_command(request.text, request.current_time)
+
+
+@router.get("/", response_model=List[TaskResponse])
+async def get_tasks(
+    skip: int = 0, 
+    limit: int = 100, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await task_service.get_tasks(db, skip=skip, limit=limit, user_id=current_user.id)
+
+@router.get("/plan/", response_model=PlanResponse)
+async def get_daily_plan(
+    date: Optional[str] = None, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await task_service.get_daily_plan(db, date_str=date, user_id=current_user.id)
+
+@router.get("/summary/", response_model=SummaryResponse)
+async def get_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await task_service.get_end_of_day_summary(db, user_id=current_user.id)
+
+@router.get("/insights")
+async def get_insights(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return await task_service.get_user_insights(db, user_id=current_user.id)
+
+@router.get("/{task_id}", response_model=TaskResponse)
+async def get_task(
+    task_id: int, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    task = await task_service.get_task(db, task_id, current_user.id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+@router.patch("/{task_id}", response_model=TaskResponse)
+async def update_task(
+    task_id: int, 
+    task: TaskUpdate, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    updated_task = await task_service.update_task_status(db, task_id, task, current_user.id)
+    if not updated_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return updated_task
+
+@router.delete("/{task_id}", response_model=TaskResponse)
+async def delete_task(
+    task_id: int, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    deleted_task = await task_service.delete_task(db, task_id, current_user.id)
+    if not deleted_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return deleted_task

@@ -20,17 +20,8 @@ async def register_user(user_in: UserCreate, db: AsyncSession = Depends(get_db))
     
     new_user = await user_service.create_user(db, user_in)
     
-    # 🚀 Send Welcome Notification
+    # 🚀 Create Welcome Inbox Notification (No Push yet - Token missing)
     try:
-        from app.core.fcm_manager import fcm_manager
-        # We need the user's token, but new users might not have one yet until they login on the app.
-        # Wait, the token comes from the frontend AFTER login.
-        # So we can't send a push *immediately* here because we don't have the FCM token in DB yet.
-        # The token is saved in /update_settings usually.
-        
-        # Correction: We can't push here. We should do it when the token is first synced?
-        # OR: We can just create an Inbox notification record so they see it when they open the notifications screen.
-        
         from app.models.notification import Notification
         welcome_notif = Notification(
             user_id=new_user.id,

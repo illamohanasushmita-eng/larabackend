@@ -2,15 +2,14 @@ import logging
 import re
 from datetime import datetime, timedelta
 import random
+import dateparser
+from dateparser.search import search_dates
 
 logger = logging.getLogger(__name__)
 
-# --- NO GEMINI ---
-# Pure logic-based parsing to ensure stability
-
 async def generate_ai_summary(summary_type: str, user_name: str, tasks: list):
     """
-    Generate a formatted summary using templates instead of AI
+    Generate a formatted summary using templates.
     """
     try:
         if not tasks:
@@ -52,13 +51,31 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list):
 
 async def process_voice_command(user_text: str, current_time: str = None):
     """
-    Logic-based voice parser (Regex)
-    Extracts 'Time' and 'Title' from natural language
+    Advanced voice parser using dateparser for natural language time extraction.
+    Supports: "tomorrow at 10am", "in 30 mins", "next friday", "at 6pm"
     """
     try:
-        user_text_lower = user_text.lower()
+        # 1. Setup Base Time
+        # Use provided current_time (ISO string) or system time
+        if current_time:
+            try:
+                base_time = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
+            except ValueError:
+                base_time = datetime.now()
+        else:
+            base_time = datetime.now()
+
+        # Ensure timezone unaware for simpler comparisons/math if needed, or stick to offset-naive for calculation
+        # But if fromisoformat returns offset-aware, we should be consistent.
+        # Let's use valid local time logic.
+        # Ideally, we work with naive objects if the app is simple single-timezone,
+        # OR we just trust dateparser to handle relative deltas.
         
-        # 1. Defaults
+        # For 'today' checks, we need to know what 'today' is in the user's timezone.
+        # Since we use 'base_time' as RELATIVE_BASE, dateparser handles it.
+        
+        logger.info(f"Processing Voice: '{user_text}' at {base_time}")
+
         response = {
             "title": "",
             "time": None,
@@ -67,114 +84,177 @@ async def process_voice_command(user_text: str, current_time: str = None):
             "response_text": ""
         }
 
-        # 2. Extract Time using Regex
-        # Matches: "at 5 pm", "at 10:30", "at 7"
-        time_match = re.search(r'\bat\s+(\d{1,2})(:(\d{2}))?\s*(am|pm)?', user_text_lower)
-        extracted_time = None
+        # 2. Extract Date/Time
+        # settings: PREFER_DATES_FROM='future' helps resolve "10am" to tomorrow if 10am passed? 
+        # Actually 'future' prefers future dates for ambiguous periods.
+        extracted_date = None
+        extracted_text = ""
         
-        if time_match:
-            hour = int(time_match.group(1))
-            minute = int(time_match.group(3)) if time_match.group(3) else 0
-            period = time_match.group(4) # am/pm
+        try:
+            # search_dates returns list of (text, datetime)
+            matches = search_dates(user_text, settings={'RELATIVE_BASE': base_time, 'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Asia/Kolkata', 'TO_TIMEZONE': 'Asia/Kolkata'})
+        except Exception as dp_err:
+            logger.error(f"Dateparser error: {dp_err}")
+            matches = None
 
-            # Convert to 24-hour HH:MM
-            if period:
-                if period == 'pm' and hour != 12:
-                    hour += 12
-                elif period == 'am' and hour == 12:
-                    hour = 0
+        if matches:
+            # Usually the last match is the most relevant if multiple dates mentioned?
+            # Or the one that looks like a due date.
+            # Example: "Schedule meeting on Friday at 5pm" -> "Friday at 5pm" might be one match or two.
+            # dateparser usually grabs the longest chunk if logical.
             
-            extracted_time = f"{hour:02d}:{minute:02d}"
+            # We take the match that covers the "time" intent
+            # Let's pick the last one found as it's often at the end of sentence "Call mom at 5"
+            match_text, match_dt = matches[-1]
             
-            # Remove the time string from the title
-            # Clean "at 5 pm" from text
-            clean_text = re.sub(r'\bat\s+(\d{1,2})(:(\d{2}))?\s*(am|pm)?', '', user_text, flags=re.IGNORECASE)
+            extracted_date = match_dt
+            extracted_text = match_text
+            
+            # Custom Rule: "If time passes for today -> schedule for next day"
+            # matches[-1] might be "10 am"
+            # If base_time is 2pm, dateparser with 'future' might yield tomorrow 10am OR today 10am depending on config.
+            # Let's explicitly enforce the rule:
+            # If the user SAID "today 10am", we assume they mean it (even if past).
+            # If the user SAID "10am" (implied today) and it's past, move to tomorrow.
+            
+            # Heuristic: Check if 'today' or explicit date was in the text.
+            # If 'today' or 'tomorrow' or 'monday' NOT in match_text, and only time was matched...
+            # This is hard to detect perfectly.
+            # Simpler Rule: If the extracted date is more than 5 minutes in the PAST relative to base_time,
+            # AND the user text did NOT explicitly say "yesterday" or a past date keyword,
+            # THEN add 1 day.
+            
+            # Ensure timezone awareness (Asia/Kolkata) if needed, but for now we rely on consistent base_time
+            # If base_time is naive, result is naive. If base_time is aware, result is aware.
+            # The user requested explicit Asia/Kolkata handling.
+            # We can force the timezone if the result is naive.
+            
+            import pytz
+            tz = pytz.timezone('Asia/Kolkata')
+            
+            # Helper to localize if naive
+            def ensure_tz(dt):
+                if dt.tzinfo is None:
+                    return tz.localize(dt)
+                return dt.astimezone(tz)
+
+            extracted_date = ensure_tz(extracted_date)
+            base_time = ensure_tz(base_time)
+
+            time_diff = extracted_date - base_time
+            
+            # If it's in the past (allow 5 min buffer)
+            if time_diff.total_seconds() < -300: 
+                # Check for explicit past keywords to avoid altering "Remind me what I did yesterday" (though that's not a task)
+                lower_match = match_text.lower()
+                if "yesterday" not in lower_match and "last" not in lower_match:
+                     logger.info(f"Time {extracted_date} is in past. Moving to next day.")
+                     extracted_date += timedelta(days=1)
+
+            # Format time for response (ISO with timezone)
+            response["time"] = extracted_date.isoformat()
+            
+            # Clean title: Remove the matched date string from the original text
+            # We use replace, but be careful of overlapping/repeated words.
+            # Use regex to replace the specific match index if possible, OR string replace.
+            # match_text usually matches exactly from source.
+            clean_text = user_text.replace(match_text, "").strip()
+            
+            # Cleanup extra prepositions left over: "Call mom at" -> "Call mom"
+            clean_text = re.sub(r'\bat\s*$', '', clean_text, flags=re.IGNORECASE).strip()
+            clean_text = re.sub(r'\bon\s*$', '', clean_text, flags=re.IGNORECASE).strip()
+            
         else:
+            # 3. Default Time (+3 hours)
             clean_text = user_text
+            default_due = base_time + timedelta(hours=3)
+            # Start of next hour for cleanliness? Or exact +3h
+            # Requirement: "current time + 3 hours"
+            response["time"] = default_due.isoformat()
+            extracted_date = default_due # For message formatting
 
-        # 3. Clean Title & Verb Extraction
-        # Strategy: Look for common task verbs. If found, start title from there.
-        # If no verb found, stick to prefix removal or raw text.
+        # 4. Smart Title Extraction (Verbs)
+        # Similar to previous logic but on the clean_text
         
-        common_verbs = [
+        action_verbs = [
+            "call", "email", "text", "message", "whatsapp",
             "buy", "get", "purchase", "order",
-            "call", "contact", "email", "message", "text", "whatsapp",
-            "meet", "schedule", "attend", "join",
+            "meet", "schedule", "attend",
             "pay", "transfer", "send",
             "clean", "wash", "fix", "repair",
             "finish", "submit", "complete", "do",
-            "read", "write", "study", "learn",
-            "visit", "go",
-            "remind", "nudge", "wake"
+            "read", "write", "study", "visit", "go to"
         ]
         
-        # Construct dynamic regex for verbs: \b(buy|call|meet...)\b
-        verb_pattern = r"\b(" + "|".join(common_verbs) + r")\b"
+        lower_clean = clean_text.lower()
+        final_start_index = 0
         
-        verb_match = re.search(verb_pattern, clean_text, re.IGNORECASE)
+        # Priority: "Remind me to"
+        remind_match = re.search(r"remind\s+(?:me|us)\s+to\s+", lower_clean)
         
-        if verb_match:
-            # We found a strong verb!
-            # If the verb is "remind" or "nudge", we usually want what comes AFTER "remind me to..."
-            # For other verbs like "Buy milk", we want "Buy milk"
-            
-            verb = verb_match.group(1).lower()
-            
-            if verb in ["remind", "nudge", "wake"]:
-                # Special handling: "Remind me to [Real Task]"
-                # Look for "to" after the verb
-                after_verb = clean_text[verb_match.end():]
-                to_match = re.search(r"\bto\b", after_verb, re.IGNORECASE)
-                if to_match:
-                    clean_text = after_verb[to_match.end():].strip()
-                else:
-                    # Fallback "Remind mom"
-                    clean_text = clean_text.strip()
+        if remind_match:
+            final_start_index = remind_match.end()
+        else:
+            # Verb Search
+            verb_pattern = r"\b(" + "|".join(action_verbs) + r")\b"
+            verb_match = re.search(verb_pattern, lower_clean)
+            if verb_match:
+                # If verb is 'start' of sentence (ignoring filler "I want to...")
+                final_start_index = verb_match.start()
             else:
-                # Standard Action: "Buy milk..." -> take from verb onwards
-                clean_text = clean_text[verb_match.start():].strip()
-                
-        else:
-            # No strong verb found, fallback to prefix cleaning logic
-            command_patterns = [
-                r"add\s+a\s+task\s+to\s+",
-                r"add\s+task\s+to\s+",
-                r"create\s+a\s+task\s+to\s+",
-                r"make\s+a\s+task\s+to\s+",
-                r"new\s+task\s+"
-            ]
-            for pattern in command_patterns:
-                match = re.search(pattern, clean_text, re.IGNORECASE)
-                if match:
-                    clean_text = clean_text[match.end():].strip()
-                    break
+                # Fallback prefixes
+                prefixes = [
+                    r"add\s+a\s+task\s+to\s+", r"add\s+task\s+to\s+",
+                    r"create\s+a\s+task\s+to\s+", r"new\s+task\s+",
+                    r"i\s+need\s+to\s+", r"i\s+have\s+to\s+", r"please\s+"
+                ]
+                for p in prefixes:
+                    m = re.match(p, lower_clean)
+                    if m:
+                        final_start_index = m.end()
+                        break
         
-        # If no specific command phrase found, we assume the whole text is the title (minus time)
-        clean_text = clean_text.strip()
-        response["title"] = clean_text.capitalize()
-        response["time"] = extracted_time
+        real_title = clean_text[final_start_index:].strip()
+        # Remove trailing politeness
+        real_title = re.sub(r"\s+(please|thanks|thank you)\W*$", "", real_title, flags=re.IGNORECASE)
+        real_title = real_title.strip()
+        
+        # 5. Personalize Pronouns (I -> You, My -> Your)
+        # Apply strict word boundary checks
+        replacements = [
+            (r"\bI'm\b", "You're"),
+            (r"\bI\b", "You"),
+            (r"\bmy\b", "your"),
+            (r"\bMy\b", "Your"),
+            (r"\bme\b", "you"),
+            (r"\bam\b", "are"),
+             # Optional: "myself" -> "yourself" handling if needed, but basic set covers 95%
+        ]
+        
+        # Apply replacements to the title
+        # We process matches case-insensitively for the search, but simple Sub works if we use flags.
+        # However, `re.sub` needs to be done carefully to preserve original case if not matched,
+        # but here we WANT to change the word.
+        
+        for pattern, replacement in replacements:
+            real_title = re.sub(pattern, replacement, real_title, flags=re.IGNORECASE)
+            
+        if not real_title:
+            # If we stripped everything, use original?
+            real_title = "New Task"
 
-        # 4. Generate Response
-        # 4. Generate Response
-        if response["title"] and not response["time"]:
-            # ✅ User Request: Restore One-Shot Logic
-            # If no time mentioned, default to +3 hours from now
-            now = datetime.now()
-            default_due = now + timedelta(hours=3)
-            extracted_time = default_due.strftime("%H:%M")
-            
-            response["time"] = extracted_time
-            response["is_complete"] = True
-            response["response_text"] = f"Got it! I've added '{response['title']}' for {extracted_time} (3 hours from now). ✅"
-            
-        elif response["title"] and response["time"]:
-            # Complete
-            response["is_complete"] = True
-            response["response_text"] = f"Got it! I've scheduled '{response['title']}' for {extracted_time}. ✅"
-            
+        response["title"] = real_title.capitalize()
+        response["is_complete"] = True
+        
+        # Friendly response text
+        # Format extracted_date pretty
+        pretty_time = extracted_date.strftime("%I:%M %p")
+        
+        if matches:
+            response["response_text"] = f"Got it! Scheduled '{response['title']}' for {pretty_time}. ✅"
         else:
-            # Fallback
-            response["response_text"] = "I didn't capture a task title. Could you say it again?"
+            # Auto +3h
+            response["response_text"] = f"Added '{response['title']}'. Due at {pretty_time} (in 3 hrs). ✅"
 
         return response
 
@@ -184,7 +264,6 @@ async def process_voice_command(user_text: str, current_time: str = None):
             "title": "",
             "time": None,
             "type": "task",
-            "response_text": "I had a glitch processing that. One more time?",
+            "response_text": "I had trouble understanding that. Could you try again?",
             "is_complete": False
         }
-

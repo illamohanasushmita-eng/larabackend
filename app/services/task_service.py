@@ -13,11 +13,20 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
     logger.info(f"   Type: {task.type}")
     
     try:
+        # 🕒 Timezone Normalization Fix
+        # If the task has a due_date, ensure it's converted to UTC before saving.
+        # This handles cases where old APKs send IST strings (+05:30).
+        normalized_due_date = task.due_date
+        if normalized_due_date and normalized_due_date.tzinfo is not None:
+            from datetime import timezone
+            normalized_due_date = normalized_due_date.astimezone(timezone.utc).replace(tzinfo=None)
+            logger.info(f"🔄 Normalized aware due_date {task.due_date} -> UTC {normalized_due_date}")
+
         db_task = Task(
             title=task.title,
             raw_text=task.raw_text,
             description=task.description,
-            due_date=task.due_date,
+            due_date=normalized_due_date,
             type=task.type,
             user_id=user_id
         )
@@ -114,16 +123,14 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     dt_ist_start = datetime.combine(target_date, time.min) # 00:00:00
     dt_ist_end = datetime.combine(target_date, time.max)   # 23:59:59.999
     
-    # 2. Subtract 5:30 to get UTC range
-    # Ensure we treat these as "local time" before converting
-    # Or just manual subtraction
-    from datetime import timedelta
+    # definining the window for Today's IST Day in UTC
     dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
     dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
     
-    logger.info(f"🔍 [get_daily_plan] IST range: {dt_ist_start} to {dt_ist_end}")
-    logger.info(f"🔍 [get_daily_plan] UTC range: {dt_utc_start} to {dt_utc_end}")
+    logger.info(f"🔍 [get_daily_plan] IST window: {dt_ist_start} to {dt_ist_end}")
+    logger.info(f"🔍 [get_daily_plan] UTC window: {dt_utc_start} to {dt_utc_end}")
     
+    # Fetch tasks within the window
     query = select(Task).filter(
         Task.user_id == user_id,
         Task.due_date >= dt_utc_start,
@@ -132,6 +139,18 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     
     result = await db.execute(query)
     tasks = result.scalars().all()
+    
+    # 🕵️ Debug: Check if any tasks were excluded that might have been today
+    all_query = select(Task).filter(Task.user_id == user_id).limit(20)
+    all_res = await db.execute(all_query)
+    all_tasks = all_res.scalars().all()
+    
+    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks in window. User total tasks checked: {len(all_tasks)}")
+    for t in all_tasks:
+        if t.due_date:
+            in_window = dt_utc_start <= t.due_date <= dt_utc_end
+            if not in_window and t.due_date.date() == target_date:
+                 logger.info(f"⚠️  Task excluded but has same date: ID={t.id}, Title='{t.title}', Due={t.due_date} UTC (Naive)")
     
     if not tasks:
         return {

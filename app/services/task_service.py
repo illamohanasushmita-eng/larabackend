@@ -148,9 +148,15 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks in window. User total tasks checked: {len(all_tasks)}")
     for t in all_tasks:
         if t.due_date:
-            in_window = dt_utc_start <= t.due_date <= dt_utc_end
-            if not in_window and t.due_date.date() == target_date:
-                 logger.info(f"⚠️  Task excluded but has same date: ID={t.id}, Title='{t.title}', Due={t.due_date} UTC (Naive)")
+            # Ensure comparison is done on naive UTC datetimes
+            t_due = t.due_date
+            if t_due.tzinfo is not None:
+                from datetime import timezone
+                t_due = t_due.astimezone(timezone.utc).replace(tzinfo=None)
+            
+            in_window = dt_utc_start <= t_due <= dt_utc_end
+            if not in_window and t_due.date() == target_date:
+                 logger.info(f"⚠️  Task excluded but has same date: ID={t.id}, Title='{t.title}', Due={t_due} UTC (Naive)")
     
     if not tasks:
         return {

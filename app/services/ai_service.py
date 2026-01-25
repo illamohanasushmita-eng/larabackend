@@ -92,7 +92,10 @@ async def process_voice_command(user_text: str, current_time: str = None):
         
         try:
             # search_dates returns list of (text, datetime)
-            matches = search_dates(user_text, settings={'RELATIVE_BASE': base_time, 'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Asia/Kolkata', 'TO_TIMEZONE': 'Asia/Kolkata'})
+            # Enable lenient period parsing
+            # dateparser sometimes prefers AM if ambiguous.
+            # We will use PREFER_DATES_FROM='future' combined with a period check.
+            matches = search_dates(user_text, settings={'RELATIVE_BASE': base_time, 'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Asia/Kolkata', 'TO_TIMEZONE': 'Asia/Kolkata', 'PREFER_DAY_OF_MONTH': 'current'})
         except Exception as dp_err:
             logger.error(f"Dateparser error: {dp_err}")
             matches = None
@@ -140,6 +143,32 @@ async def process_voice_command(user_text: str, current_time: str = None):
 
             extracted_date = ensure_tz(extracted_date)
             base_time = ensure_tz(base_time)
+
+            # --- AM/PM Ambiguity Fix ---
+            # If user said "10 o clock" (ambiguous) -> dateparser might guess AM.
+            # If 10 AM is in the past (and within today), flip to 10 PM.
+            # Only do this if the user did NOT explicitly say "AM".
+            # Check original text for "am" or "morning".
+            
+            # Simple check: If dateparser gave us a time < base_time (on the same day),
+            # AND the shift to PM puts it in the future, we assume PM.
+            
+            is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
+            
+            if is_ambiguous:
+                # Need to handle potential naive/aware comparison if dateparser returned naive
+                # extracted_date is already ensure_tz'd up top.
+                
+                # If extracted is earlier than now (e.g. 10:00 < 14:00)
+                # Note: extracted_date and base_time are both aware (Asia/Kolkata) from ensure_tz lines above
+                if extracted_date < base_time and extracted_date.date() == base_time.date():
+                    # Try adding 12 hours
+                    potential_pm = extracted_date + timedelta(hours=12)
+                    # If that makes it valid (future), use it
+                    # Also ensure it's still the same day (don't accidentally jump to next day if it was 11:59 AM -> 11:59 PM is ok)
+                    if potential_pm > base_time and potential_pm.date() == base_time.date():
+                         logger.info(f"Flipping ambiguous {extracted_date} to PM -> {potential_pm}")
+                         extracted_date = potential_pm
 
             time_diff = extracted_date - base_time
             

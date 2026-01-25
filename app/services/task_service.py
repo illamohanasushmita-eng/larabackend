@@ -66,13 +66,39 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
 
     target_date = date.fromisoformat(date_str) if date_str else date.today()
     
-    start_dt = datetime.combine(target_date, time.min)
-    end_dt = datetime.combine(target_date, time.max)
+    # 🌍 Fix: Handle Timezone properly.
+    # We want tasks where the due_date falls on this target_date.
+    # But due_date in DB is UTC.
+    # A task at 10 AM IST (Today) is stored as 4:30 AM UTC (Today).
+    # A task at 1 AM IST (Tomorrow) is stored as 7:30 PM UTC (Today).
+    
+    # Simple Date Filter on SQLAlchemy works on the STORED value if we just cast to Date.
+    # BUT Postgres 'Date' cast is usually UTC.
+    # Correct Way: Convert stored UTC to IST, then extract Date.
+    # OR: Define the start/end range in UTC that corresponds to the IST day.
+    
+    # IST = UTC + 5:30
+    # Day Start: 00:00 IST = Prev Day 18:30 UTC
+    # Day End:   23:59 IST = This Day 18:29 UTC
+    
+    # Let's verify 'target_date' is meant to be the User's Local Date.
+    # We construct the Range in UTC.
+    
+    # 1. Create 00:00 IST on target date (naive)
+    dt_ist_start = datetime.combine(target_date, time.min) # 00:00:00
+    dt_ist_end = datetime.combine(target_date, time.max)   # 23:59:59.999
+    
+    # 2. Subtract 5:30 to get UTC range
+    # Ensure we treat these as "local time" before converting
+    # Or just manual subtraction
+    from datetime import timedelta
+    dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
+    dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
     
     query = select(Task).filter(
         Task.user_id == user_id,
-        Task.due_date >= start_dt,
-        Task.due_date <= end_dt
+        Task.due_date >= dt_utc_start,
+        Task.due_date <= dt_utc_end
     ).order_by(Task.due_date)
     
     result = await db.execute(query)

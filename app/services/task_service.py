@@ -157,7 +157,18 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             continue
             
         time_bound_count += 1
-        h = t.due_date.hour
+        
+        # 🕒 Convert UTC due_date to IST for grouping
+        # due_date from DB is naive UTC (usually) or aware UTC
+        dt_utc = t.due_date
+        if dt_utc.tzinfo is None:
+            from datetime import timezone
+            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+            
+        # Convert to IST
+        dt_ist = dt_utc + timedelta(hours=5, minutes=30)
+        h = dt_ist.hour
+        
         if 5 <= h < 12:
             sections_map["Morning"].append(t)
         elif 12 <= h < 16:
@@ -167,7 +178,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         else:
             sections_map["Night"].append(t)
             
-    sections = [{"slot": k, "items": v} for k, v in sections_map.items() if v]
+    sections = [{"slot": k, "items": v} for k, v in sections_map.items() if len(v) > 0]
     
     count = len(tasks)
     if count == 1:

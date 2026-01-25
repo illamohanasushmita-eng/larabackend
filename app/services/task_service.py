@@ -4,18 +4,33 @@ from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskUpdate
 
 async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
-    db_task = Task(
-        title=task.title,
-        raw_text=task.raw_text,
-        description=task.description,
-        due_date=task.due_date,
-        type=task.type,
-        user_id=user_id
-    )
-    db.add(db_task)
-    await db.commit()
-    await db.refresh(db_task)
-    return db_task
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"📝 Creating task for user {user_id}")
+    logger.info(f"   Title: {task.title}")
+    logger.info(f"   Due Date: {task.due_date}")
+    logger.info(f"   Type: {task.type}")
+    
+    try:
+        db_task = Task(
+            title=task.title,
+            raw_text=task.raw_text,
+            description=task.description,
+            due_date=task.due_date,
+            type=task.type,
+            user_id=user_id
+        )
+        db.add(db_task)
+        await db.commit()
+        await db.refresh(db_task)
+        
+        logger.info(f"✅ Task created successfully! ID: {db_task.id}")
+        return db_task
+    except Exception as e:
+        logger.error(f"❌ Failed to create task: {e}")
+        await db.rollback()
+        raise
 
 async def get_tasks(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
     result = await db.execute(select(Task).filter(Task.user_id == user_id).offset(skip).limit(limit))

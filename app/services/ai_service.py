@@ -113,6 +113,8 @@ async def process_voice_command(user_text: str, current_time: str = None):
             extracted_date = match_dt
             extracted_text = match_text
             
+            logger.info(f"🔍 [DateParser] Raw match: '{match_text}' -> {match_dt}")
+            
             # Custom Rule: "If time passes for today -> schedule for next day"
             # matches[-1] might be "10 am"
             # If base_time is 2pm, dateparser with 'future' might yield tomorrow 10am OR today 10am depending on config.
@@ -143,6 +145,8 @@ async def process_voice_command(user_text: str, current_time: str = None):
 
             extracted_date = ensure_tz(extracted_date)
             base_time = ensure_tz(base_time)
+            
+            logger.info(f"🕐 [Timezone] After ensure_tz: {extracted_date}, base: {base_time}")
 
             # --- AM/PM Ambiguity Fix ---
             # If user said "10 o clock" (ambiguous) -> dateparser might guess AM.
@@ -154,6 +158,7 @@ async def process_voice_command(user_text: str, current_time: str = None):
             # AND the shift to PM puts it in the future, we assume PM.
             
             is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
+            logger.info(f"❓ [Ambiguity] is_ambiguous={is_ambiguous}, match_text='{match_text}'")
             
             if is_ambiguous:
                 # Need to handle potential naive/aware comparison if dateparser returned naive
@@ -167,10 +172,25 @@ async def process_voice_command(user_text: str, current_time: str = None):
                     # If that makes it valid (future), use it
                     # Also ensure it's still the same day (don't accidentally jump to next day if it was 11:59 AM -> 11:59 PM is ok)
                     if potential_pm > base_time and potential_pm.date() == base_time.date():
-                         logger.info(f"Flipping ambiguous {extracted_date} to PM -> {potential_pm}")
+                         logger.info(f"⏰ [Flip] {extracted_date} -> {potential_pm} (AM to PM)")
                          extracted_date = potential_pm
+                    else:
+                         logger.info(f"⏰ [Flip] Skipped (would go to next day or still past)")
+                else:
+                    logger.info(f"⏰ [Flip] Skipped (already future or different day)")
 
             time_diff = extracted_date - base_time
+            
+            # --- Midnight Default Fix ---
+            # If dateparser returned midnight (00:00) and user didn't say "midnight/night":
+            # This happens when user says "tomorrow" without a time
+            # Default to 9 AM instead of midnight
+            if extracted_date.hour == 0 and extracted_date.minute == 0:
+                if "midnight" not in user_text.lower() and "night" not in match_text.lower() and "12 am" not in user_text.lower():
+                    # User probably meant "tomorrow" (during the day)
+                    # Set to 9 AM
+                    extracted_date = extracted_date.replace(hour=9, minute=0)
+                    logger.info(f"🌅 [Midnight Fix] Changed 00:00 -> 09:00 (assumed morning)")
             
             # If it's in the past (allow 5 min buffer)
             if time_diff.total_seconds() < -300: 

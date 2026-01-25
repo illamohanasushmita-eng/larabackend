@@ -8,6 +8,11 @@ class NotificationBase(BaseModel):
     data: Optional[dict] = None
     is_read: bool = False
 
+class NotificationCreate(BaseModel):
+    title: str
+    body: str
+    data: Optional[dict] = None
+
 class NotificationResponse(NotificationBase):
     id: int
     user_id: int

@@ -67,6 +67,9 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     # Determine Greeting based on current time
     # ✅ Fix: Railway server is UTC, so we add 5:30 for IST (User's timezone)
     from datetime import timedelta
+    import logging
+    logger = logging.getLogger(__name__)
+    
     now_ist = datetime.now() + timedelta(hours=5, minutes=30)
     now_hour = now_ist.hour
     
@@ -79,7 +82,15 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     else:
         greeting_time = "Good Night"
 
-    target_date = date.fromisoformat(date_str) if date_str else date.today()
+    # ✅ CRITICAL FIX: Use IST date, not server UTC date
+    # If date_str is provided, use it. Otherwise, use TODAY in IST.
+    if date_str:
+        target_date = date.fromisoformat(date_str)
+    else:
+        # Server is in UTC, but user expects "today" in IST
+        target_date = now_ist.date()
+    
+    logger.info(f"📅 [get_daily_plan] Target date: {target_date} (IST)")
     
     # 🌍 Fix: Handle Timezone properly.
     # We want tasks where the due_date falls on this target_date.
@@ -109,6 +120,9 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     from datetime import timedelta
     dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
     dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
+    
+    logger.info(f"🔍 [get_daily_plan] IST range: {dt_ist_start} to {dt_ist_end}")
+    logger.info(f"🔍 [get_daily_plan] UTC range: {dt_utc_start} to {dt_utc_end}")
     
     query = select(Task).filter(
         Task.user_id == user_id,

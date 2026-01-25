@@ -296,8 +296,18 @@ async def process_voice_command(user_text: str, current_time: str = None):
         response["is_complete"] = True
         
         # Friendly response text
-        # Format extracted_date pretty
-        pretty_time = extracted_date.strftime("%I:%M %p")
+        # Format extracted_date in IST (never show UTC to user)
+        # extracted_date is already in IST timezone from ensure_tz above
+        import pytz
+        tz_ist = pytz.timezone('Asia/Kolkata')
+        
+        # Ensure it's in IST for user-facing time display
+        if extracted_date.tzinfo is None:
+            display_time = tz_ist.localize(extracted_date)
+        else:
+            display_time = extracted_date.astimezone(tz_ist)
+        
+        pretty_time = display_time.strftime("%I:%M %p")
         
         if matches:
             response["response_text"] = f"Got it! Scheduled '{response['title']}' for {pretty_time}. ✅"

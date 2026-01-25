@@ -17,10 +17,15 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
         # If the task has a due_date, ensure it's converted to UTC before saving.
         # This handles cases where old APKs send IST strings (+05:30).
         normalized_due_date = task.due_date
-        if normalized_due_date and normalized_due_date.tzinfo is not None:
+        if normalized_due_date:
             from datetime import timezone
-            normalized_due_date = normalized_due_date.astimezone(timezone.utc).replace(tzinfo=None)
-            logger.info(f"🔄 Normalized aware due_date {task.due_date} -> UTC {normalized_due_date}")
+            if normalized_due_date.tzinfo is not None:
+                # Convert Aware to UTC
+                normalized_due_date = normalized_due_date.astimezone(timezone.utc)
+            else:
+                # Treat Naive as UTC (Standard practice for this app's API)
+                normalized_due_date = normalized_due_date.replace(tzinfo=timezone.utc)
+            logger.info(f"🔄 Normalized due_date to Aware UTC: {normalized_due_date}")
 
         db_task = Task(
             title=task.title,
@@ -102,33 +107,20 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     logger.info(f"📅 [get_daily_plan] Target date: {target_date} (IST)")
     
     # 🌍 Fix: Handle Timezone properly.
-    # We want tasks where the due_date falls on this target_date.
-    # But due_date in DB is UTC.
-    # A task at 10 AM IST (Today) is stored as 4:30 AM UTC (Today).
-    # A task at 1 AM IST (Tomorrow) is stored as 7:30 PM UTC (Today).
-    
-    # Simple Date Filter on SQLAlchemy works on the STORED value if we just cast to Date.
-    # BUT Postgres 'Date' cast is usually UTC.
-    # Correct Way: Convert stored UTC to IST, then extract Date.
-    # OR: Define the start/end range in UTC that corresponds to the IST day.
-    
-    # IST = UTC + 5:30
-    # Day Start: 00:00 IST = Prev Day 18:30 UTC
-    # Day End:   23:59 IST = This Day 18:29 UTC
-    
-    # Let's verify 'target_date' is meant to be the User's Local Date.
-    # We construct the Range in UTC.
+    # Postgres stores UTC. We construct Aware UTC ranges to query.
+    from datetime import timezone
     
     # 1. Create 00:00 IST on target date (naive)
     dt_ist_start = datetime.combine(target_date, time.min) # 00:00:00
     dt_ist_end = datetime.combine(target_date, time.max)   # 23:59:59.999
     
-    # definining the window for Today's IST Day in UTC
-    dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
-    dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
+    # 2. Convert IST target range to Aware UTC range
+    # IST = UTC + 5:30. To get UTC, we subtract 5:30 and tag as UTC.
+    dt_utc_start = (dt_ist_start - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    dt_utc_end = (dt_ist_end - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
     
     logger.info(f"🔍 [get_daily_plan] IST window: {dt_ist_start} to {dt_ist_end}")
-    logger.info(f"🔍 [get_daily_plan] UTC window: {dt_utc_start} to {dt_utc_end}")
+    logger.info(f"🔍 [get_daily_plan] UTC window (Aware): {dt_utc_start} to {dt_utc_end}")
     
     # Fetch tasks within the window
     query = select(Task).filter(
@@ -148,15 +140,18 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks in window. User total tasks checked: {len(all_tasks)}")
     for t in all_tasks:
         if t.due_date:
-            # Ensure comparison is done on naive UTC datetimes
+            # Ensure comparison is done on aware UTC datetimes
             t_due = t.due_date
-            if t_due.tzinfo is not None:
+            if t_due.tzinfo is None:
                 from datetime import timezone
-                t_due = t_due.astimezone(timezone.utc).replace(tzinfo=None)
+                t_due = t_due.replace(tzinfo=timezone.utc)
+            else:
+                from datetime import timezone
+                t_due = t_due.astimezone(timezone.utc)
             
             in_window = dt_utc_start <= t_due <= dt_utc_end
             if not in_window and t_due.date() == target_date:
-                 logger.info(f"⚠️  Task excluded but has same date: ID={t.id}, Title='{t.title}', Due={t_due} UTC (Naive)")
+                 logger.info(f"⚠️  Task excluded: ID={t.id}, Title='{t.title}', Due={t_due}")
     
     if not tasks:
         return {
@@ -220,17 +215,24 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     }
 
 async def get_end_of_day_summary(db: AsyncSession, user_id: int):
-    from datetime import date, datetime, time
+    from datetime import date, datetime, time, timedelta
     
-    today = date.today()
-    start_dt = datetime.combine(today, time.min)
-    end_dt = datetime.combine(today, time.max)
+    # Use IST today
+    now_ist = datetime.now() + timedelta(hours=5, minutes=30)
+    target_date = now_ist.date()
     
-    # Fetch all tasks for today
+    # Define IST window in UTC
+    dt_ist_start = datetime.combine(target_date, time.min)
+    dt_ist_end = datetime.combine(target_date, time.max)
+    
+    dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
+    dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
+    
+    # Fetch all tasks for today (UTC window)
     query = select(Task).filter(
         Task.user_id == user_id,
-        Task.due_date >= start_dt,
-        Task.due_date <= end_dt
+        Task.due_date >= dt_utc_start,
+        Task.due_date <= dt_utc_end
     )
     result = await db.execute(query)
     tasks = result.scalars().all()

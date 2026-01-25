@@ -235,6 +235,15 @@ async def process_voice_command(user_text: str, current_time: str = None):
             "read", "write", "study", "visit", "go to"
         ]
         
+        # 🧪 Type Detection
+        lower_text = user_text.lower()
+        if any(word in lower_text for word in ["meeting", "meet", "appointment", "zoom", "call"]):
+            response["type"] = "meeting"
+        elif any(word in lower_text for word in ["remind", "reminder", "alarm"]):
+            response["type"] = "reminder"
+        else:
+            response["type"] = "task"
+            
         lower_clean = clean_text.lower()
         final_start_index = 0
         

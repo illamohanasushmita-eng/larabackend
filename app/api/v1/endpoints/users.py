@@ -83,6 +83,11 @@ async def login(user_in: UserLogin, db: AsyncSession = Depends(get_db)):
     }
 
 
+@router.get("/profile", response_model=UserResponse)
+async def get_user_profile(current_user: User = Depends(get_current_user)):
+    """Get current user details"""
+    return current_user
+
 @router.put("/profile", response_model=UserResponse)
 async def update_profile(
     user_update: UserUpdate, 

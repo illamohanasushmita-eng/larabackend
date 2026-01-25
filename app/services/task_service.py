@@ -50,7 +50,11 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     user_name = user.full_name if user else "Friend"
     
     # Determine Greeting based on current time
-    now_hour = datetime.now().hour
+    # ✅ Fix: Railway server is UTC, so we add 5:30 for IST (User's timezone)
+    from datetime import timedelta
+    now_ist = datetime.now() + timedelta(hours=5, minutes=30)
+    now_hour = now_ist.hour
+    
     if 5 <= now_hour < 12:
         greeting_time = "Good Morning"
     elif 12 <= now_hour < 17:

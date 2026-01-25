@@ -18,8 +18,26 @@ class FCMManager:
             FCMManager._initialized = True
 
     def _initialize_firebase(self):
-        """Initialize Firebase Admin SDK with service account credentials"""
+        """Initialize Firebase Admin SDK once with ENV or JSON file"""
+        # 1. Prevent duplicate initialization
+        if firebase_admin._apps:
+            return
+
         try:
+            # 2. Try initializing from Environment Variable (Railway/Production)
+            if settings.FIREBASE_SERVICE_ACCOUNT:
+                try:
+                    import json
+                    cred_dict = json.loads(settings.FIREBASE_SERVICE_ACCOUNT)
+                    cred = credentials.Certificate(cred_dict)
+                    firebase_admin.initialize_app(cred)
+                    print("✅ Firebase Admin SDK initialized from ENV")
+                    return
+                except Exception as e:
+                    print(f"⚠️ Failed to parse FIREBASE_SERVICE_ACCOUNT JSON: {e}")
+                    # Fall through to file method
+
+            # 3. Fallback to Local JSON File (Development)
             cred_path = os.path.join(
                 os.path.dirname(__file__), 
                 "..", 
@@ -27,15 +45,15 @@ class FCMManager:
                 settings.FIREBASE_CREDENTIALS
             )
             
-            if not os.path.exists(cred_path):
-                print(f"⚠️ Firebase credentials not found at: {cred_path}")
-                return
-            
-            cred = credentials.Certificate(cred_path)
-            firebase_admin.initialize_app(cred)
-            print("✅ Firebase Admin SDK initialized successfully")
+            if os.path.exists(cred_path):
+                cred = credentials.Certificate(cred_path)
+                firebase_admin.initialize_app(cred)
+                print("✅ Firebase Admin SDK initialized from local file")
+            else:
+                print(f"⚠️ FIREBASE_SERVICE_ACCOUNT missing in Railway Variables and file not found at {cred_path}")
+                
         except Exception as e:
-            print(f"❌ Failed to initialize Firebase: {e}")
+            print(f"❌ CRITICAL: Failed to initialize Firebase: {e}")
 
     async def send_notification(self, token: str, title: str, body: str, data: dict = None, click_action: str = None):
         """

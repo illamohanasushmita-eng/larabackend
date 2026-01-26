@@ -128,35 +128,47 @@ async def process_voice_command(user_text: str, current_time: str = None):
             matches = search_dates(user_text, settings={'RELATIVE_BASE': now_ist, 'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Asia/Kolkata', 'TO_TIMEZONE': 'Asia/Kolkata'})
             if matches:
                 temp_match, temp_dt = matches[-1]
-                if not re.fullmatch(r'\d{1,2}', temp_match.strip()):
+                # 🛡️ SECURITY: Only trust NLP if it matched a word like 'today', 'tomorrow', 'at', 'pm', or a full time pattern.
+                # This stops random numbers like "28" or "10" (from "Task 28") being seen as dates/times.
+                trigger_keywords = ["today", "tomorrow", "tonight", "at", "by", "for", "on", "am", "pm", "clock", "morning", "evening", "afternoon", "night"]
+                is_valid_time_mention = any(w in temp_match.lower() for w in trigger_keywords) or ":" in temp_match
+                
+                if is_valid_time_mention:
                     match_text = temp_match
                     extracted_date = temp_dt if temp_dt.tzinfo else temp_dt.replace(tzinfo=tz_ist)
-                    # Use 10 AM default for future vague days, +3h for today
+                    
+                    # 🌅 Handle generic today/tomorrow (00:00)
                     if extracted_date.hour == 0 and extracted_date.minute == 0 and not re.search(r'\d', match_text):
-                        extracted_date = (now_ist + dt_module.timedelta(hours=3)) if extracted_date.date() == now_ist.date() else extracted_date.replace(hour=10, minute=0)
-                    if (extracted_date - now_ist).total_seconds() < -60: extracted_date += dt_module.timedelta(days=1)
-                    logger.info(f"🧠 [NLP] Matched '{match_text}' -> {extracted_date}")
+                        if extracted_date.date() == now_ist.date():
+                             extracted_date = now_ist + dt_module.timedelta(hours=2) # Default Rule
+                        else:
+                             extracted_date = extracted_date.replace(hour=10, minute=0) # 10 AM tomorrow
+                    
+                    # Past Fix
+                    if (extracted_date - now_ist).total_seconds() < -60:
+                        extracted_date += dt_module.timedelta(days=1)
+                else:
+                    logger.info(f"⏭️  [NLP] Ignoring suspicious match (no keywords): '{temp_match}'")
 
-        # 🚀 Default: +3 Hours
+        # 🚀 DEFAULT RULE: If no valid time found, use Today + 2 Hours
         if not extracted_date:
-            extracted_date = now_ist + dt_module.timedelta(hours=3)
+            extracted_date = now_ist + dt_module.timedelta(hours=2)
+            logger.info(f"⏰ [Default] No time mentioned, applied Today + 2h: {extracted_date}")
 
         # Smart Vague Clarification (only if no digits used)
         if not re.search(r'\d', match_text) and any(w in input_text for w in ["morning", "evening", "afternoon"]):
             suggested = 10 if "morning" in input_text else (15 if "afternoon" in input_text else 18)
             extracted_date = extracted_date.replace(hour=suggested, minute=0, second=0, microsecond=0)
-            if extracted_date < now_ist and (extracted_date.date() == now_ist.date()): extracted_date += dt_module.timedelta(days=1)
+            if extracted_date < now_ist and (extracted_date.date() == now_ist.date()): 
+                extracted_date += dt_module.timedelta(days=1)
 
         # --- C. Finalize and Save (Immediate) ---
-        # 🧹 Broad Clean: Strip match text first
         clean_title = user_text
         if match_text:
              clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
 
-        # 🧹 Residue Clean: Strip anything that looks like time HH:MM AM/PM
+        # 🧹 Broad residue cleaning
         clean_title = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock)\b', '', clean_title, flags=re.IGNORECASE).strip()
-        
-        # 🧹 Preposition Clean: Remove trailing "at", "for", etc.
         clean_title = re.sub(r'\b(at|on|for|in|to|with|by|around)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
 
         # 👥 Pronoun Shift
@@ -167,7 +179,6 @@ async def process_voice_command(user_text: str, current_time: str = None):
         for v in ["remind me to", "remind me", "add task to", "i need to", "create task", "call"]:
             clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
 
-        # Final Cleanup
         final_title = (clean_title or "New Task").capitalize()
         pretty_time = extracted_date.strftime("%I:%M %p")
         day_label = "today" if extracted_date.date() == now_ist.date() else ("tomorrow" if (extracted_date.date() - now_ist.date()).days == 1 else extracted_date.strftime("%b %d"))

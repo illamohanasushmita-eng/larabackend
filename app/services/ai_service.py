@@ -62,10 +62,8 @@ async def process_voice_command(user_text: str, current_time: str = None):
             try:
                 base_time = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
             except ValueError:
-                from datetime import timezone
                 base_time = datetime.now(timezone.utc)
         else:
-            from datetime import timezone
             base_time = datetime.now(timezone.utc)
 
         # Ensure timezone unaware for simpler comparisons/math if needed, or stick to offset-naive for calculation

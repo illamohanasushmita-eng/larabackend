@@ -184,11 +184,11 @@ async def process_voice_command(user_text: str, current_time: str = None):
         clean_title = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock|oclock)\b', '', clean_title, flags=re.IGNORECASE).strip()
         
         # 3. 🧹 Fillers & Instructional Phrases
-        # Catching both Persons (me/you) to be safe
+        # We REMOVED "call" from here so that the action verb stays in the title!
         fillers = [
             r"remind (?:me|you) to", r"remind (?:me|you)", r"add task to", 
             r"i need to", r"you need to", r"create (?:a )?task to", r"create (?:a )?task for",
-            r"set (?:a )?reminder for", r"tell (?:me|you) to", r"call", r"please"
+            r"set (?:a )?reminder for", r"tell (?:me|you) to", r"please"
         ]
         for f in fillers:
             clean_title = re.sub(r'^' + f + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()

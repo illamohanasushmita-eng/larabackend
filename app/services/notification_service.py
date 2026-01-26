@@ -95,21 +95,50 @@ async def check_and_send_summaries(db: AsyncSession, now_utc: datetime):
                     db.add(setting)
 
 async def get_user_tasks_for_day(db: AsyncSession, user_id: int, target_date):
-    """Helper to fetch tasks for a specific user on a specific day"""
-    from datetime import time
-    start_dt = datetime.combine(target_date, time.min)
-    end_dt = datetime.combine(target_date, time.max)
+    """Helper to fetch tasks for a specific user on a specific day using robust IST filtering"""
+    from datetime import time, timedelta, timezone
+    
+    # Define IST bounds in UTC-like relative terms
+    dt_ist_start = datetime.combine(target_date, time.min)
+    dt_ist_end = datetime.combine(target_date, time.max)
+    
+    # Convert IST target range to approximate UTC range (wide net)
+    # subtracting 5:30 to get UTC equivalent
+    dt_utc_start = (dt_ist_start - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    dt_utc_end = (dt_ist_end - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    
+    # Fetch tasks with a wider buffer (±1 Day)
+    buffer = timedelta(days=1)
+    query_start = dt_utc_start - buffer
+    query_end = dt_utc_end + buffer
     
     query = select(Task).filter(
         and_(
             Task.user_id == user_id,
-            Task.due_date >= start_dt,
-            Task.due_date <= end_dt
+            Task.due_date >= query_start,
+            Task.due_date <= query_end
         )
     ).order_by(Task.due_date)
     
     res = await db.execute(query)
-    return res.scalars().all()
+    all_potential_tasks = res.scalars().all()
+    
+    # Filter strictly in Python
+    tz_ist = timezone(timedelta(hours=5, minutes=30))
+    tasks = []
+    
+    for t in all_potential_tasks:
+        if not t.due_date: continue
+        
+        t_due = t.due_date
+        if t_due.tzinfo is None:
+            t_due = t_due.replace(tzinfo=timezone.utc)
+            
+        t_ist = t_due.astimezone(tz_ist)
+        if t_ist.date() == target_date:
+            tasks.append(t)
+            
+    return tasks
 
 
 

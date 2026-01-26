@@ -1,7 +1,7 @@
 import logging
 import re
 # Core services for AI processing
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import dateparser
 from dateparser.search import search_dates

@@ -23,17 +23,15 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
         normalized_due_date = task.due_date
         if normalized_due_date:
             if normalized_due_date.tzinfo is not None:
-                # Convert Aware to UTC
-                normalized_due_date = normalized_due_date.astimezone(timezone.utc)
+                # Keep original timezone (likely IST from UI/AI)
+                pass
             else:
                 # Treat Naive as IST (Asia/Kolkata)
                 ist_tz = timezone(timedelta(hours=5, minutes=30))
                 # Localize as IST
-                dt_ist = normalized_due_date.replace(tzinfo=ist_tz)
-                # Convert to UTC
-                normalized_due_date = dt_ist.astimezone(timezone.utc)
+                normalized_due_date = normalized_due_date.replace(tzinfo=ist_tz)
                 
-            logger.info(f"🔄 Normalized due_date to Aware UTC: {normalized_due_date}")
+            logger.info(f"🔄 Storing due_date (Aware IST/Input): {normalized_due_date}")
 
         # Normalize Type and Status
         safe_type = task.type.lower() if task.type else "task"
@@ -230,15 +228,15 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             
         time_bound_count += 1
         
-        # 🕒 Convert UTC due_date to IST for grouping
-        # due_date from DB is naive UTC (usually) or aware UTC
-        dt_utc = t.due_date
-        if dt_utc.tzinfo is None:
-            dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+        # Convert DB time to IST for grouping
+        # No matter if it was stored as UTC or IST, .astimezone(tz_ist) yields the correct local hour
+        tz_ist = timezone(timedelta(hours=5, minutes=30))
+        t_due = t.due_date
+        if t_due.tzinfo is None:
+            # Fallback for old/naive data: assume UTC and convert
+            t_due = t_due.replace(tzinfo=timezone.utc)
             
-        # Convert to IST
-        # We manually shift by +5:30 for display logic grouping
-        dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        dt_ist = t_due.astimezone(tz_ist)
         h = dt_ist.hour
         
         if 5 <= h < 12:

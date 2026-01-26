@@ -140,15 +140,52 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     logger.info(f"🔍 [get_daily_plan] IST window: {dt_ist_start} to {dt_ist_end}")
     logger.info(f"🔍 [get_daily_plan] UTC window (Aware): {dt_utc_start} to {dt_utc_end}")
     
-    # Fetch tasks within the window
+    # Fetch tasks with a wider buffer (±1 Day) to ensure we catch everything despite timezone shifts
+    # Then filter strictly in Python
+    buffer = timedelta(days=1)
+    query_start = dt_utc_start - buffer
+    query_end = dt_utc_end + buffer
+    
     query = select(Task).filter(
         Task.user_id == user_id,
-        Task.due_date >= dt_utc_start,
-        Task.due_date <= dt_utc_end
+        Task.due_date >= query_start,
+        Task.due_date <= query_end
     ).order_by(Task.due_date)
     
     result = await db.execute(query)
-    tasks = result.scalars().all()
+    all_potential_tasks = result.scalars().all()
+    
+    # Strict Python Filter for "Today" in IST
+    tasks = []
+    logger.info(f"📊 [get_daily_plan] Filtering {len(all_potential_tasks)} candidates for {target_date}")
+    
+    for t in all_potential_tasks:
+        if not t.due_date:
+            continue
+            
+        # Convert DB time to IST
+        # Handle naive as UTC
+        t_utc = t.due_date
+        if t_utc.tzinfo is None:
+            t_utc = t_utc.replace(tzinfo=timezone.utc)
+            
+        t_ist = t_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        
+        if t_ist.date() == target_date:
+            tasks.append(t)
+        else:
+            # logger.info(f"   Skipping {t.title} at {t_ist} (Date mismatch)")
+            pass
+            
+    # Include unscheduled tasks if any (though usually they have no date, handled separately?)
+    # If due_date is None, our SQL filter ^ skips them unless we allow None
+    # Let's separately fetch unscheduled if needed, but 'get_daily_plan' usually implies scheduled.
+    # Actually, current SQL `Task.due_date >= ...` excludes Nulls automatically.
+    # We should add `OR Task.due_date IS NULL` if we want unscheduled.
+    # But usually Daily Plan is time-focused.
+    
+    # Re-apply sorting
+    tasks.sort(key=lambda x: x.due_date)
     
     # 🕵️ Debug: Check if any tasks were excluded that might have been today
     all_query = select(Task).filter(Task.user_id == user_id).limit(20)

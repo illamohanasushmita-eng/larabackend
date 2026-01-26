@@ -84,87 +84,92 @@ async def process_voice_command(user_text: str, current_time: str = None):
         }
 
         matches = None
-        try:
-            # Use data parser with IST base
-            matches = search_dates(user_text, settings={
-                'RELATIVE_BASE': base_time_ist, 
-                'PREFER_DATES_FROM': 'future', 
-                'TIMEZONE': 'Asia/Kolkata', 
-                'TO_TIMEZONE': 'Asia/Kolkata', 
-                'PREFER_DAY_OF_MONTH': 'current'
-            })
-        except Exception as dp_err:
-            logger.error(f"Dateparser error: {dp_err}")
-
         extracted_date = None
         match_text = ""
         clean_text = user_text
 
-        if matches:
-            match_text, match_dt = matches[-1]
-            extracted_date = match_dt
-            
-            # Localize result to IST if naive
-            if extracted_date.tzinfo is None:
-                extracted_date = extracted_date.replace(tzinfo=tz_ist)
-            else:
-                extracted_date = extracted_date.astimezone(tz_ist)
+        # 1. 🛡️ Prioritize Manual Regex for "o'clock" and "at X"
+        # These are highly specific and often misinterpreted by NLP libraries if filler words are present.
+        fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
+        if not fallback_match:
+             fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
+        
+        if fallback_match:
+            try:
+                h = int(fallback_match.group(1))
+                candidates = []
+                v_am = h if h != 12 else 0
+                v_pm = h + 12 if h != 12 else 12
+                if v_pm >= 24: v_pm -= 12
+                
+                for h_val in sorted(list(set([v_am, v_pm]))):
+                    candidates.append(base_time_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
+                
+                candidates.sort()
+                future_candidates = [d for d in candidates if d > base_time_ist]
+                
+                if future_candidates:
+                    extracted_date = future_candidates[0]
+                else:
+                    extracted_date = candidates[0] + dt_module.timedelta(days=1)
+                
+                match_text = fallback_match.group(0)
+                logger.info(f"🎯 [Regex Match] Used manual extraction for: '{match_text}' -> {extracted_date}")
+            except:
+                pass
 
-            # AM/PM Ambiguity Check
-            is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
-            if is_ambiguous and extracted_date < base_time_ist and extracted_date.date() == base_time_ist.date():
-                potential_pm = extracted_date + dt_module.timedelta(hours=12)
-                if potential_pm > base_time_ist and potential_pm.date() == base_time_ist.date():
-                     extracted_date = potential_pm
-
-            # Midnight Fix
-            if extracted_date.hour == 0 and extracted_date.minute == 0:
-                if "midnight" not in user_text.lower() and "night" not in match_text.lower():
-                    extracted_date = extracted_date.replace(hour=9, minute=0)
-
-            # Past Fix (Next Day)
-            if (extracted_date - base_time_ist).total_seconds() < -300:
-                if "yesterday" not in match_text.lower():
-                    extracted_date += dt_module.timedelta(days=1)
-
-            clean_text = user_text.replace(match_text, "").strip()
-            # Save ISO format (IST)
-            response["time"] = extracted_date.isoformat()
-
-        else:
-            # Fallback Manual Regex
-            fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
-            if not fallback_match:
-                 fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
-            
-            if fallback_match:
-                try:
-                    h = int(fallback_match.group(1))
-                    candidates = []
-                    v_am = h if h != 12 else 0
-                    v_pm = h + 12 if h != 12 else 12
-                    if v_pm >= 24: v_pm -= 12
+        # 2. 🧪 Use dateparser if regex didn't catch it
+        if not extracted_date:
+            try:
+                matches = search_dates(user_text, settings={
+                    'RELATIVE_BASE': base_time_ist, 
+                    'PREFER_DATES_FROM': 'future', 
+                    'TIMEZONE': 'Asia/Kolkata', 
+                    'TO_TIMEZONE': 'Asia/Kolkata', 
+                    'PREFER_DAY_OF_MONTH': 'current'
+                })
+                if matches:
+                    match_text, match_dt = matches[-1]
+                    extracted_date = match_dt
                     
-                    for h_val in sorted(list(set([v_am, v_pm]))):
-                        candidates.append(base_time_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
-                    
-                    candidates.sort()
-                    future_candidates = [d for d in candidates if d > base_time_ist]
-                    
-                    if future_candidates:
-                        extracted_date = future_candidates[0]
+                    if extracted_date.tzinfo is None:
+                        extracted_date = extracted_date.replace(tzinfo=tz_ist)
                     else:
-                        extracted_date = candidates[0] + dt_module.timedelta(days=1)
-                        
-                    response["time"] = extracted_date.isoformat()
-                    clean_text = user_text.replace(fallback_match.group(0), "").strip()
-                except:
-                    pass
+                        extracted_date = extracted_date.astimezone(tz_ist)
 
+                    # AM/PM Ambiguity Check
+                    is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
+                    if is_ambiguous and extracted_date < base_time_ist and extracted_date.date() == base_time_ist.date():
+                        potential_pm = extracted_date + dt_module.timedelta(hours=12)
+                        if potential_pm > base_time_ist and potential_pm.date() == base_time_ist.date():
+                             extracted_date = potential_pm
+
+                    # 🌅 [Smart Midnight Fix]
+                    # Only default to 9 AM if the match is purely a day (like "tomorrow") 
+                    # without any specific digits or time markers.
+                    if extracted_date.hour == 0 and extracted_date.minute == 0:
+                        has_time_cue = re.search(r'\d', match_text) or "am" in match_text.lower() or "pm" in match_text.lower()
+                        if not has_time_cue and "midnight" not in user_text.lower():
+                            extracted_date = extracted_date.replace(hour=9, minute=0)
+                            logger.info(f"🌅 [Defaulting] Vague date '{match_text}' to 9:00 AM")
+
+                    # Past Fix (Next Day)
+                    if (extracted_date - base_time_ist).total_seconds() < -300:
+                        if "yesterday" not in match_text.lower():
+                            extracted_date += dt_module.timedelta(days=1)
+                
+            except Exception as dp_err:
+                logger.error(f"Dateparser error: {dp_err}")
+
+        # 3. Final Fallback (3 hours from now)
         if not extracted_date:
             extracted_date = base_time_ist + dt_module.timedelta(hours=3)
-            response["time"] = extracted_date.isoformat()
             clean_text = user_text
+        else:
+            clean_text = user_text.replace(match_text, "").strip()
+
+        # Save ISO format (IST)
+        response["time"] = extracted_date.isoformat()
 
         # Cleanup leftover prepositions
         clean_text = re.sub(r'\b(at|on|for)\s*$', '', clean_text, flags=re.IGNORECASE).strip()

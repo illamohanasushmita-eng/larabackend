@@ -193,38 +193,45 @@ async def process_voice_command(user_text: str, current_time: str = None):
                 "response_text": f"Do you mean {day_str} at {suggested_hour % 12 or 12} {'PM' if suggested_hour >= 12 else 'AM'} IST? 🧐"
             }
 
-        # C. Ready for Confirmation Turn (Rule 6)
+        # C. finalize and Save immediately (User requested: no confirmation)
         clean_title = user_text.strip()
         if match_text:
-             try: clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
+             try: 
+                 clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
              except: pass
 
-        # Clean noise
-        for n in ["today", "tomorrow", "tonight", "this morning", "this evening"]:
-            clean_title = re.sub(r'\b' + n + r'\b', '', clean_title, flags=re.IGNORECASE).strip()
-
-        # Clean filler
-        for v in ["remind me to", "add task to", "i need to", "call"]:
-            clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE)
+        # 🧹 Clean noise & fillers
+        noise = ["today", "tomorrow", "tonight", "this morning", "this evening"]
+        for n in noise: clean_title = re.sub(r'\b' + n + r'\b', '', clean_title, flags=re.IGNORECASE).strip()
         
-        # Clean trailing prepositions
-        clean_title = re.sub(r'\b(at|on|for|in|to)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
+        fillers = ["remind me to", "remind me", "add task to", "i need to", "create task", "call", "please"]
+        for v in fillers: clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
+        
+        # 👥 Personalize Pronouns
+        person_repls = [(r"\bI'm\b", "You're"), (r"\bi am\b", "you are"), (r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are")]
+        for p, r in person_repls: clean_title = re.sub(p, r, clean_title, flags=re.IGNORECASE).strip()
+
+        # 🧹 Clean trailing prepositions
+        clean_title = re.sub(r'\b(at|on|for|in|to|with)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
         
         final_title = (clean_title or "New Task").capitalize()
         pretty_time = extracted_date.strftime("%I:%M %p")
-        day_label = "Today" if extracted_date.date() == now_ist.date() else "Tomorrow"
-        
+        day_label = "today" if extracted_date.date() == now_ist.date() else "tomorrow"
+        # If it's more than 1 day away, use date format
+        if (extracted_date.date() - now_ist.date()).days > 1:
+            day_label = extracted_date.strftime("%b %d")
+
         return {
             "title": final_title,
             "time": extracted_date.isoformat(),
             "type": "reminder" if "remind" in input_text else "task",
-            "response_text": f"Okay, I will add this reminder:\nTask: {final_title}\nTime: {day_label} at {pretty_time} IST\nShould I confirm and save it? 😊",
-            "is_complete": False
+            "response_text": f"Got it! Scheduled '{final_title}' for {day_label} at {pretty_time} IST. ✅",
+            "is_complete": True # 🚀 SAVE IMMEDIATELY
         }
 
     except Exception as exc:
         logger.error(f"LARA Critical Error: {exc}")
         return {
             "title": "", "time": None, "type": "task", "is_complete": False,
-            "response_text": "I'm sorry, I'm having a bit of trouble. Mind saying that again? 🙏"
+            "response_text": "I'm sorry, I had some trouble. Could you repeat that? 🙏"
         }

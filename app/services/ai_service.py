@@ -152,31 +152,37 @@ async def process_voice_command(user_text: str, current_time: str = None):
             if matches:
                 match_text, match_dt = matches[-1]
                 extracted_date = match_dt if match_dt.tzinfo else match_dt.replace(tzinfo=tz_ist)
+                
+                # 🌅 Midnight Default Fix - if dateparser gives 00:00 (vague day match)
+                if extracted_date.hour == 0 and extracted_date.minute == 0:
+                    has_time_num = re.search(r'\d', match_text) or "am" in match_text.lower() or "pm" in match_text.lower()
+                    if not has_time_num:
+                         # Default to +3 hours from now if user just mentioned "today/tomorrow"
+                         if extracted_date.date() == now_ist.date():
+                              extracted_date = now_ist + dt_module.timedelta(hours=3)
+                         else:
+                              extracted_date = extracted_date.replace(hour=10, minute=0) # 10 AM tomorrow
+                
+                # Past Fix (Next Day)
                 if (extracted_date - now_ist).total_seconds() < -60:
                      extracted_date += dt_module.timedelta(days=1)
                 logger.info(f"🧠 [NLP] Extracted: {extracted_date}")
 
-        # --- STEP 3: LARA Personality & Clarification ---
+        # --- STEP 3: LARA Personality & Defaults ---
         
-        # A. If NO TIME found at all
+        # 🚀 Fix: If NO TIME found at all, default to Today + 3 Hours (as requested)
         if not extracted_date:
-            return {
-                "title": user_text.capitalize(),
-                "time": None, "type": "task", "is_complete": False,
-                "response_text": "Sure. At what time should I set this reminder in IST? 🕒"
-            }
+            extracted_date = now_ist + dt_module.timedelta(hours=3)
+            logger.info(f"⏰ [Default] No time mentioned, using +3h: {extracted_date}")
 
-        # B. Smart Vague Fix (morning/evening)
-        # Check if user said "morning" or "evening" without specific time digits
+        # Smart Vague Fix (morning/evening words)
         is_vague = False
         if not re.search(r'\d', match_text):
-            if any(w in input_text for w in ["morning", "evening", "tomorrow", "today"]):
+            if any(w in input_text for w in ["morning", "evening"]):
                 is_vague = True
 
         if is_vague:
             suggested_hour = 10 if "morning" in input_text else 18 # 10 AM or 6 PM
-            if "night" in input_text: suggested_hour = 21 # 9 PM
-            
             day_str = "today" if extracted_date.date() == now_ist.date() else "tomorrow"
             extracted_date = extracted_date.replace(hour=suggested_hour, minute=0, second=0, microsecond=0)
             
@@ -187,14 +193,22 @@ async def process_voice_command(user_text: str, current_time: str = None):
                 "response_text": f"Do you mean {day_str} at {suggested_hour % 12 or 12} {'PM' if suggested_hour >= 12 else 'AM'} IST? 🧐"
             }
 
-        # C. Ready for Confirmation Turn
-        clean_title = user_text.replace(match_text, "").strip()
+        # C. Ready for Confirmation Turn (Rule 6)
+        clean_title = user_text.strip()
+        if match_text:
+             try: clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
+             except: pass
+
+        # Clean noise
+        for n in ["today", "tomorrow", "tonight", "this morning", "this evening"]:
+            clean_title = re.sub(r'\b' + n + r'\b', '', clean_title, flags=re.IGNORECASE).strip()
+
         # Clean filler
         for v in ["remind me to", "add task to", "i need to", "call"]:
             clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE)
         
         # Clean trailing prepositions
-        clean_title = re.sub(r'\b(at|on|for)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
+        clean_title = re.sub(r'\b(at|on|for|in|to)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
         
         final_title = (clean_title or "New Task").capitalize()
         pretty_time = extracted_date.strftime("%I:%M %p")

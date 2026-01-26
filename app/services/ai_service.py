@@ -228,34 +228,29 @@ async def process_voice_command(user_text: str, current_time: str = None):
             
             extracted_date = None
 
+            # Ensure base_time is localized to IST for manual hour replacement logic
+            # This is crucial so that .replace(hour=10) means 10 AM IST, not 10 AM UTC.
+            import pytz
+            tz_ist = pytz.timezone('Asia/Kolkata')
+            
+            if base_time.tzinfo is None:
+                base_time_ist = tz_ist.localize(base_time)
+            else:
+                base_time_ist = base_time.astimezone(tz_ist)
+
             if fallback_match:
                 logger.info(f"🔄 [Fallback] Manually matched time: {fallback_match.group(0)}")
                 try:
                     h = int(fallback_match.group(1))
                     
-                    # Manual Heuristic for AM/PM if not specified:
-                    # 1. Create candidates for today: AM and PM
-                    # 2. Filter for those in the future relative to base_time
-                    # 3. Pick the earliest future candidate
-                    # 4. If none today, pick AM tomorrow
-                    
-                    # Normalize hour 12 behavior (12 = 0 in calculation usually, but here we treat strictly as clock hour)
-                    # We assume 1-12 input range mostly
-                    
                     candidates = []
-                    
-                    # Case 1: Treat h as AM (if h=12, treat as 12 PM usually, but here let's stick to 24h logic)
-                    # Actually users say "10" for 10:00.
-                    # If h=10 -> 10:00 (10 AM) and 22:00 (10 PM)
-                    
                     val_am = h if h != 12 else 0 # 12 AM is 00:00
                     val_pm = h + 12 if h != 12 else 12 # 12 PM is 12:00
-                    if val_pm >= 24: val_pm -= 12 # Safety (e.g. user says 13)
+                    if val_pm >= 24: val_pm -= 12
                     
-                    # Create timestamps for TODAY
-                    # We MUST respect the base_time timezone (which is IST or UTC acting as IST local time)
-                    dt_am = base_time.replace(hour=val_am, minute=0, second=0, microsecond=0)
-                    dt_pm = base_time.replace(hour=val_pm, minute=0, second=0, microsecond=0)
+                    # Create timestamps for TODAY in IST context
+                    dt_am = base_time_ist.replace(hour=val_am, minute=0, second=0, microsecond=0)
+                    dt_pm = base_time_ist.replace(hour=val_pm, minute=0, second=0, microsecond=0)
                     
                     # Add to candidates if valid hour
                     if 0 <= val_am < 24: candidates.append(dt_am)
@@ -265,8 +260,7 @@ async def process_voice_command(user_text: str, current_time: str = None):
                     candidates.sort()
                     
                     # Find first future date
-                    # Note: base_time is ALREADY localized/aware
-                    future_dates = [d for d in candidates if d > base_time]
+                    future_dates = [d for d in candidates if d > base_time_ist]
                     
                     if future_dates:
                         extracted_date = future_dates[0]
@@ -276,13 +270,8 @@ async def process_voice_command(user_text: str, current_time: str = None):
                         
                     response["time"] = extracted_date.isoformat()
                     
-                    # Ensure we strip the EXACT matched phrase from the text, 
-                    # otherwise "at 10 o clock" remains in the title.
+                    # Ensure we strip the EXACT matched phrase from the text
                     clean_text = user_text.replace(fallback_match.group(0), "").strip()
-                    
-                    # Also strip "at" prepositions if they were immediately before the match (e.g. "at 10")
-                    # The regex might have caught "10", but "at" is outside.
-                    # Or our regex catch "at 10" in the second fallback check.
                     
                     # Let's run a general cleanup for dangling "at" or "on" at the end of the cleaned text
                     clean_text = re.sub(r'\bat\s*$', '', clean_text, flags=re.IGNORECASE).strip()

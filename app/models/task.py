@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, DateTime, BigInteger, F
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base
+from app.utils.timezone import get_ist_time
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -21,7 +22,7 @@ class Task(Base):
     last_nudged_at = Column(DateTime(timezone=True), nullable=True) # Last time user was nudged
     med_timing = Column(String, nullable=True) # e.g. "morning,afternoon,night"
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    created_at = Column(DateTime(timezone=True), default=get_ist_time)
+    updated_at = Column(DateTime(timezone=True), default=get_ist_time, onupdate=get_ist_time)
 
     owner = relationship("User", back_populates="tasks")

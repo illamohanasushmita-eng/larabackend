@@ -3,6 +3,7 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from app.core.database import Base
+from app.utils.timezone import get_ist_time
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -13,6 +14,6 @@ class Notification(Base):
     body = Column(String)
     data = Column(JSONB, nullable=True) # Store native JSON objects
     is_read = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), default=get_ist_time)
 
     owner = relationship("User", back_populates="notifications")

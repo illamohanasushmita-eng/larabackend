@@ -181,43 +181,37 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     # We should add `OR Task.due_date IS NULL` if we want unscheduled.
     # But usually Daily Plan is time-focused.
     
-    # Re-apply sorting
+    # Sort today's tasks
     tasks.sort(key=lambda x: x.due_date)
     
-    # 🕵️ Debug: Check if any tasks were excluded that might have been today
-    all_query = select(Task).filter(Task.user_id == user_id).limit(20)
-    all_res = await db.execute(all_query)
-    all_tasks = all_res.scalars().all()
+    # 🚀 NEW: Fetch "Upcoming" tasks (next 5 tasks after today)
+    upcoming_query = select(Task).filter(
+        Task.user_id == user_id,
+        Task.due_date > dt_utc_end, # Use dt_utc_end for strict "after today"
+        Task.status == "pending"
+    ).order_by(Task.due_date).limit(5)
     
-    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks in window. User total tasks checked: {len(all_tasks)}")
-    for t in all_tasks:
-        if t.due_date:
-            # Ensure comparison is done on aware UTC datetimes
-            t_due = t.due_date
-            if t_due.tzinfo is None:
-                t_due = t_due.replace(tzinfo=timezone.utc)
-            else:
-                t_due = t_due.astimezone(timezone.utc)
-            
-            in_window = dt_utc_start <= t_due <= dt_utc_end
-            if not in_window and t_due.date() == target_date:
-                 logger.info(f"⚠️  Task excluded: ID={t.id}, Title='{t.title}', Due={t_due}")
+    upcoming_res = await db.execute(upcoming_query)
+    upcoming_tasks = upcoming_res.scalars().all()
     
-    if not tasks:
+    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks for today and {len(upcoming_tasks)} upcoming.")
+    
+    if not tasks and not upcoming_tasks:
         return {
             "morning_message": f"{greeting_time}! 🙂 Your schedule is looking nice and light today.",
             "user_name": user_name,
             "sections": [],
             "total_count": 0,
+            "upcoming": [],
             "time_bound_count": 0
         }
     
     sections_map = {
         "Morning": [],
-        "Afternoon": [],
-        "Evening": [],
-        "Night": [],
-        "Unscheduled": []
+    "Afternoon": [],
+    "Evening": [],
+    "Night": [],
+    "Unscheduled": []
     }
     
     time_bound_count = 0
@@ -253,14 +247,17 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     count = len(tasks)
     if count == 1:
         msg = f"{greeting_time}! You have 1 task today. Let's make it count!"
-    else:
+    elif count > 1:
         msg = f"{greeting_time}! You have {count} tasks scheduled. {time_bound_count} are time-sensitive."
+    else:
+        msg = f"{greeting_time}! Nothing scheduled for today, but you have {len(upcoming_tasks)} upcoming tasks."
 
     return {
         "morning_message": msg,
         "user_name": user_name,
         "sections": sections,
         "total_count": count,
+        "upcoming": upcoming_tasks,
         "time_bound_count": time_bound_count
     }
 

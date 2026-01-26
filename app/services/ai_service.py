@@ -94,7 +94,7 @@ async def process_voice_command(user_text: str, current_time: str = None):
         # 🛡️ Enhanced Regex: Supports HH:MM, HH o'clock, HH AM/PM, and "at HH"
         regex_match = re.search(r'\b(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<suffix>o\'?\s*clock|oclock|am|pm)?\b', user_text, re.IGNORECASE)
         if regex_match and not (regex_match.group("suffix") or re.search(r'\b(?:at|by|around|for)\b', user_text[:regex_match.start()], re.IGNORECASE)):
-            regex_match = None 
+            regex_match = None # Lone number without context, ignore
 
         extracted_date = None
         match_text = ""
@@ -104,12 +104,24 @@ async def process_voice_command(user_text: str, current_time: str = None):
                 h = int(regex_match.group("hour"))
                 m = int(regex_match.group("min") or 0)
                 suffix = (regex_match.groupdict().get("suffix") or "").lower()
-                candidates = [h if h != 12 else 0] if 'am' in suffix else ([h + 12 if h != 12 else 12] if 'pm' in suffix else sorted(list(set([h if h != 12 else 0, h + 12 if h != 12 else 12]))))
-                dt_candidates = sorted([now_ist.replace(hour=h_v, minute=m, second=0, microsecond=0) for h_v in candidates if 0 <= h_v < 24])
+                
+                candidates = []
+                if 'am' in suffix: candidates = [h if h != 12 else 0]
+                elif 'pm' in suffix: candidates = [h + 12 if h != 12 else 12]
+                else: candidates = sorted(list(set([h if h != 12 else 0, h + 12 if h != 12 else 12])))
+
+                dt_candidates = []
+                for h_val in candidates:
+                    if 0 <= h_val < 24:
+                        dt_candidates.append(now_ist.replace(hour=h_val, minute=m, second=0, microsecond=0))
+                
+                dt_candidates.sort()
                 future = [d for d in dt_candidates if d > (now_ist + dt_module.timedelta(minutes=1))]
                 extracted_date = future[0] if future else (dt_candidates[0] + dt_module.timedelta(days=1))
                 match_text = regex_match.group(0)
-            except: pass
+                logger.info(f"🎯 [Regex] Matched '{match_text}' -> {extracted_date}")
+            except Exception as e:
+                logger.error(f"Regex error: {e}")
 
         # 🧪 NLP Fallback
         if not extracted_date:
@@ -117,51 +129,60 @@ async def process_voice_command(user_text: str, current_time: str = None):
             if matches:
                 temp_match, temp_dt = matches[-1]
                 if not re.fullmatch(r'\d{1,2}', temp_match.strip()):
-                    match_text, extracted_date = temp_match, (temp_dt if temp_dt.tzinfo else temp_dt.replace(tzinfo=tz_ist))
-                    # Check if it was vague (midnight match without digits)
+                    match_text = temp_match
+                    extracted_date = temp_dt if temp_dt.tzinfo else temp_dt.replace(tzinfo=tz_ist)
+                    # Use 10 AM default for future vague days, +3h for today
                     if extracted_date.hour == 0 and extracted_date.minute == 0 and not re.search(r'\d', match_text):
-                        extracted_date = None # Forces LARA to ask for time
+                        extracted_date = (now_ist + dt_module.timedelta(hours=3)) if extracted_date.date() == now_ist.date() else extracted_date.replace(hour=10, minute=0)
+                    if (extracted_date - now_ist).total_seconds() < -60: extracted_date += dt_module.timedelta(days=1)
+                    logger.info(f"🧠 [NLP] Matched '{match_text}' -> {extracted_date}")
 
-        # --- STEP 3: Handle Missing Time (Conversational Turn) ---
+        # 🚀 Default: +3 Hours
         if not extracted_date:
-            # Clean title for asking turn
-            clean_title = user_text
-            for v in ["remind me to", "add task to", "i need to", "create task", "call"]:
-                clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
-            
-            final_t = (clean_title or "this task").capitalize()
-            return {
-                "title": final_t, "time": None, "type": "task", "is_complete": False,
-                "response_text": f"Sure. At what time should I set this reminder for {final_t}? 🕒"
-            }
+            extracted_date = now_ist + dt_module.timedelta(hours=3)
 
-        # --- STEP 4: Success, finalize and Save ---
+        # Smart Vague Clarification (only if no digits used)
+        if not re.search(r'\d', match_text) and any(w in input_text for w in ["morning", "evening", "afternoon"]):
+            suggested = 10 if "morning" in input_text else (15 if "afternoon" in input_text else 18)
+            extracted_date = extracted_date.replace(hour=suggested, minute=0, second=0, microsecond=0)
+            if extracted_date < now_ist and (extracted_date.date() == now_ist.date()): extracted_date += dt_module.timedelta(days=1)
+
+        # --- C. Finalize and Save (Immediate) ---
+        # 🧹 Broad Clean: Strip match text first
         clean_title = user_text
-        if match_text: clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
+        if match_text:
+             clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
+
+        # 🧹 Residue Clean: Strip anything that looks like time HH:MM AM/PM
         clean_title = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock)\b', '', clean_title, flags=re.IGNORECASE).strip()
+        
+        # 🧹 Preposition Clean: Remove trailing "at", "for", etc.
         clean_title = re.sub(r'\b(at|on|for|in|to|with|by|around)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
 
         # 👥 Pronoun Shift
         repls = [(r"\bI'm\b", "You're"), (r"\bi am\b", "you are"), (r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are")]
         for p, r in repls: clean_title = re.sub(p, r, clean_title, flags=re.IGNORECASE).strip()
 
-        # Final Cleaning
-        for v in ["remind me to", "remind me", "add task to", "i need to", "call"]:
+        # 🧹 Leading Filler Clean
+        for v in ["remind me to", "remind me", "add task to", "i need to", "create task", "call"]:
             clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
 
+        # Final Cleanup
         final_title = (clean_title or "New Task").capitalize()
-        pretty_time, day_l = extracted_date.strftime("%I:%M %p"), ("today" if extracted_date.date() == now_ist.date() else ("tomorrow" if (extracted_date.date() - now_ist.date()).days == 1 else extracted_date.strftime("%b %d")))
+        pretty_time = extracted_date.strftime("%I:%M %p")
+        day_label = "today" if extracted_date.date() == now_ist.date() else ("tomorrow" if (extracted_date.date() - now_ist.date()).days == 1 else extracted_date.strftime("%b %d"))
 
+        logger.info(f"💾 Saving: '{final_title}' for {extracted_date}")
         return {
             "title": final_title, "time": extracted_date.isoformat(), 
             "type": "reminder" if "remind" in input_text else "task",
-            "response_text": f"Got it! Scheduled '{final_title}' for {day_l} at {pretty_time} IST. ✅",
+            "response_text": f"Got it! Scheduled '{final_title}' for {day_label} at {pretty_time} IST. ✅",
             "is_complete": True 
         }
 
     except Exception as exc:
         logger.error(f"LARA Error: {exc}")
-        return {"title": "", "time": None, "type": "task", "is_complete": False, "response_text": "I'm sorry, I missed that. Could you say it again? 🙏"}
+        return {"title": "", "time": None, "type": "task", "is_complete": False, "response_text": "I'm sorry, could you repeat that? 🙏"}
 
     except Exception as exc:
         logger.error(f"LARA Critical Error: {exc}")

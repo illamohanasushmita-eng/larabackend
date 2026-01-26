@@ -275,7 +275,19 @@ async def process_voice_command(user_text: str, current_time: str = None):
                         extracted_date = dt_am + timedelta(days=1)
                         
                     response["time"] = extracted_date.isoformat()
+                    
+                    # Ensure we strip the EXACT matched phrase from the text, 
+                    # otherwise "at 10 o clock" remains in the title.
                     clean_text = user_text.replace(fallback_match.group(0), "").strip()
+                    
+                    # Also strip "at" prepositions if they were immediately before the match (e.g. "at 10")
+                    # The regex might have caught "10", but "at" is outside.
+                    # Or our regex catch "at 10" in the second fallback check.
+                    
+                    # Let's run a general cleanup for dangling "at" or "on" at the end of the cleaned text
+                    clean_text = re.sub(r'\bat\s*$', '', clean_text, flags=re.IGNORECASE).strip()
+                    clean_text = re.sub(r'\bon\s*$', '', clean_text, flags=re.IGNORECASE).strip()
+                    
                     logger.info(f"📍 [Fallback] Smartly picked: {extracted_date}")
                     
                 except Exception as e:

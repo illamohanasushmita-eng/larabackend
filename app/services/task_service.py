@@ -202,7 +202,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             
         # Convert to IST
         # We manually shift by +5:30 for display logic grouping
-        dt_ist = dt_utc + timedelta(hours=5, minutes=30)
+        dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
         h = dt_ist.hour
         
         if 5 <= h < 12:

@@ -264,7 +264,7 @@ async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
 def format_local_time(dt: datetime):
     """Helper to convert UTC from DB to Local Time (IST +5:30) for display"""
     if not dt:
-        return ""
+        return "soon"
     
     # Check if dt is aware, if not assume it's UTC (as it comes from DB)
     if dt.tzinfo is None:
@@ -275,7 +275,7 @@ def format_local_time(dt: datetime):
         # Note: In a real prod app, we'd use user's saved timezone
         local_dt = dt + timedelta(hours=5, minutes=30)
         
-    return local_dt.strftime('%H:%M')
+    return local_dt.strftime('%I:%M %p') # Changed to 12-hour format with AM/PM for friendliness
 
 async def get_natural_message(task: Task, lead_mins: int):
     """Generate the friendly, natural messages requested by user"""

@@ -87,6 +87,15 @@ class FCMManager:
                 )
             )
 
+            # 🛡️ Defensive Check: Ensure Title and Body are never empty
+            if not title or not title.strip():
+                print(f"⚠️ Notification Title missing for token {token[:10]}... Using default.")
+                title = "New Notification"
+            
+            if not body or not body.strip():
+                print(f"⚠️ Notification Body missing for title '{title}'. Using fallback.")
+                body = "Tap to view details."
+
             message = messaging.Message(
                 notification=messaging.Notification(
                     title=title,

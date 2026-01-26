@@ -5,6 +5,9 @@ from app.schemas.task import TaskCreate, TaskUpdate
 
 async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
     import logging
+    from datetime import timezone, timedelta
+    import pytz
+    
     logger = logging.getLogger(__name__)
     
     logger.info(f"📝 Creating task for user {user_id}")
@@ -15,24 +18,36 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
     try:
         # 🕒 Timezone Normalization Fix
         # If the task has a due_date, ensure it's converted to UTC before saving.
-        # This handles cases where old APKs send IST strings (+05:30).
+        # FIX: Treat Naive as IST because users are likely sending local time from an app acting in IST
+        # If we treat naive as UTC, a 9 PM task becomes 9 PM UTC = 2:30 AM IST (Next Day), causing it to disappear from 'Today'.
+        
         normalized_due_date = task.due_date
         if normalized_due_date:
-            from datetime import timezone
             if normalized_due_date.tzinfo is not None:
                 # Convert Aware to UTC
                 normalized_due_date = normalized_due_date.astimezone(timezone.utc)
             else:
-                # Treat Naive as UTC (Standard practice for this app's API)
-                normalized_due_date = normalized_due_date.replace(tzinfo=timezone.utc)
+                # Treat Naive as IST (Asia/Kolkata)
+                ist_tz = pytz.timezone('Asia/Kolkata')
+                # Localize as IST
+                dt_ist = ist_tz.localize(normalized_due_date)
+                # Convert to UTC
+                normalized_due_date = dt_ist.astimezone(timezone.utc)
+                
             logger.info(f"🔄 Normalized due_date to Aware UTC: {normalized_due_date}")
 
+        # Normalize Type and Status
+        safe_type = task.type.lower() if task.type else "task"
+        if safe_type not in ["task", "reminder", "meeting"]:
+            safe_type = "task"
+            
         db_task = Task(
             title=task.title,
             raw_text=task.raw_text,
             description=task.description,
             due_date=normalized_due_date,
-            type=task.type,
+            type=safe_type,
+            status="pending", # Force default status
             user_id=user_id
         )
         db.add(db_task)
@@ -79,12 +94,15 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     user_name = user.full_name if user else "Friend"
     
     # Determine Greeting based on current time
+    # Determine Greeting based on current time
     # ✅ Fix: Railway server is UTC, so we add 5:30 for IST (User's timezone)
-    from datetime import timedelta
+    from datetime import timedelta, timezone
     import logging
     logger = logging.getLogger(__name__)
     
-    now_ist = datetime.now() + timedelta(hours=5, minutes=30)
+    # Use explicit UTC now to avoid local system time ambiguity
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
     now_hour = now_ist.hour
     
     if 5 <= now_hour < 12:
@@ -108,7 +126,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     
     # 🌍 Fix: Handle Timezone properly.
     # Postgres stores UTC. We construct Aware UTC ranges to query.
-    from datetime import timezone
+    # from datetime import timezone # already imported
     
     # 1. Create 00:00 IST on target date (naive)
     dt_ist_start = datetime.combine(target_date, time.min) # 00:00:00
@@ -143,10 +161,8 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             # Ensure comparison is done on aware UTC datetimes
             t_due = t.due_date
             if t_due.tzinfo is None:
-                from datetime import timezone
                 t_due = t_due.replace(tzinfo=timezone.utc)
             else:
-                from datetime import timezone
                 t_due = t_due.astimezone(timezone.utc)
             
             in_window = dt_utc_start <= t_due <= dt_utc_end
@@ -182,11 +198,10 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         # due_date from DB is naive UTC (usually) or aware UTC
         dt_utc = t.due_date
         if dt_utc.tzinfo is None:
-            from datetime import timezone
             dt_utc = dt_utc.replace(tzinfo=timezone.utc)
             
         # Convert to IST
-        dt_ist = dt_utc + timedelta(hours=5, minutes=30)
+        dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
         h = dt_ist.hour
         
         if 5 <= h < 12:
@@ -215,18 +230,19 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     }
 
 async def get_end_of_day_summary(db: AsyncSession, user_id: int):
-    from datetime import date, datetime, time, timedelta
+    from datetime import date, datetime, time, timedelta, timezone
     
-    # Use IST today
-    now_ist = datetime.now() + timedelta(hours=5, minutes=30)
+    # Use UTC now converted to IST
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
     target_date = now_ist.date()
     
     # Define IST window in UTC
     dt_ist_start = datetime.combine(target_date, time.min)
     dt_ist_end = datetime.combine(target_date, time.max)
     
-    dt_utc_start = dt_ist_start - timedelta(hours=5, minutes=30)
-    dt_utc_end = dt_ist_end - timedelta(hours=5, minutes=30)
+    dt_utc_start = (dt_ist_start - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    dt_utc_end = (dt_ist_end - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
     
     # Fetch all tasks for today (UTC window)
     query = select(Task).filter(

@@ -1,5 +1,6 @@
 import logging
 import re
+# Core services for AI processing
 from datetime import datetime, timedelta
 import random
 import dateparser
@@ -221,7 +222,6 @@ async def process_voice_command(user_text: str, current_time: str = None):
             # Let's try a custom fallback Regex for "10 o clock" missed by dateparser
             
             # Simple Regex for "X o clock" or "at X"
-            import re
             fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
             if not fallback_match:
                  fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
@@ -232,22 +232,52 @@ async def process_voice_command(user_text: str, current_time: str = None):
                 logger.info(f"🔄 [Fallback] Manually matched time: {fallback_match.group(0)}")
                 try:
                     h = int(fallback_match.group(1))
-                    if 0 <= h <= 24:
-                        extracted_date = base_time.replace(hour=h % 24, minute=0, second=0, microsecond=0)
+                    
+                    # Manual Heuristic for AM/PM if not specified:
+                    # 1. Create candidates for today: AM and PM
+                    # 2. Filter for those in the future relative to base_time
+                    # 3. Pick the earliest future candidate
+                    # 4. If none today, pick AM tomorrow
+                    
+                    # Normalize hour 12 behavior (12 = 0 in calculation usually, but here we treat strictly as clock hour)
+                    # We assume 1-12 input range mostly
+                    
+                    candidates = []
+                    
+                    # Case 1: Treat h as AM (if h=12, treat as 12 PM usually, but here let's stick to 24h logic)
+                    # Actually users say "10" for 10:00.
+                    # If h=10 -> 10:00 (10 AM) and 22:00 (10 PM)
+                    
+                    val_am = h if h != 12 else 0 # 12 AM is 00:00
+                    val_pm = h + 12 if h != 12 else 12 # 12 PM is 12:00
+                    if val_pm >= 24: val_pm -= 12 # Safety (e.g. user says 13)
+                    
+                    # Create timestamps for TODAY
+                    # We MUST respect the base_time timezone (which is IST or UTC acting as IST local time)
+                    dt_am = base_time.replace(hour=val_am, minute=0, second=0, microsecond=0)
+                    dt_pm = base_time.replace(hour=val_pm, minute=0, second=0, microsecond=0)
+                    
+                    # Add to candidates if valid hour
+                    if 0 <= val_am < 24: candidates.append(dt_am)
+                    if 0 <= val_pm < 24 and dt_pm != dt_am: candidates.append(dt_pm)
+                    
+                    # Sort candidates
+                    candidates.sort()
+                    
+                    # Find first future date
+                    # Note: base_time is ALREADY localized/aware
+                    future_dates = [d for d in candidates if d > base_time]
+                    
+                    if future_dates:
+                        extracted_date = future_dates[0]
+                    else:
+                        # If both passed today, assume tomorrow morning (AM candidate + 1 day)
+                        extracted_date = dt_am + timedelta(days=1)
                         
-                        # Heuristic: If 10 -> 10 AM. If 10 PM intended, user usually says PM.
-                        # But if 10 AM is in the past, maybe they meant 10 PM?
-                        if extracted_date < base_time:
-                            # Try adding 12 hours
-                            potential_pm = extracted_date + timedelta(hours=12)
-                            if potential_pm > base_time:
-                                extracted_date = potential_pm
-                            else:
-                                # Both 10 AM and 10 PM are past today (e.g. it's 11 PM), schedule for tomorrow 10 AM
-                                extracted_date = extracted_date + timedelta(days=1)
-                        
-                        response["time"] = extracted_date.isoformat()
-                        clean_text = user_text.replace(fallback_match.group(0), "").strip()
+                    response["time"] = extracted_date.isoformat()
+                    clean_text = user_text.replace(fallback_match.group(0), "").strip()
+                    logger.info(f"📍 [Fallback] Smartly picked: {extracted_date}")
+                    
                 except Exception as e:
                      logger.error(f"Fallback parse failed: {e}")
             

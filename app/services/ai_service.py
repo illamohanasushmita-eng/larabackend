@@ -89,34 +89,41 @@ async def process_voice_command(user_text: str, current_time: str = None):
         clean_text = user_text
 
         # 1. 🛡️ Prioritize Manual Regex for "o'clock" and "at X"
-        # These are highly specific and often misinterpreted by NLP libraries if filler words are present.
-        fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
+        # Expanded to handle: "o clock", "o'clock", "oclock", "am/pm"
+        fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\'?\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
         if not fallback_match:
+             # Handle "at 4" or "at 10" patterns
              fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
         
         if fallback_match:
             try:
                 h = int(fallback_match.group(1))
                 candidates = []
+                # Handle 12 AM/PM correctly (12 AM -> 00, 12 PM -> 12)
                 v_am = h if h != 12 else 0
                 v_pm = h + 12 if h != 12 else 12
+                # If user says 13-23, they likely mean 24h format, which fits v_pm
                 if v_pm >= 24: v_pm -= 12
                 
+                # Check Today's candidates
                 for h_val in sorted(list(set([v_am, v_pm]))):
                     candidates.append(base_time_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
                 
                 candidates.sort()
-                future_candidates = [d for d in candidates if d > base_time_ist]
+                future_candidates = [d for d in candidates if d > (base_time_ist + dt_module.timedelta(minutes=1))]
                 
                 if future_candidates:
                     extracted_date = future_candidates[0]
+                    logger.info(f"🎯 [Regex] Found future candidate for today: {extracted_date}")
                 else:
+                    # Both passed today, assume morning of next day 
+                    # Use v_am (or at least h) for tomorrow
                     extracted_date = candidates[0] + dt_module.timedelta(days=1)
+                    logger.info(f"🎯 [Regex] Time passed today, moving to tomorrow: {extracted_date}")
                 
                 match_text = fallback_match.group(0)
-                logger.info(f"🎯 [Regex Match] Used manual extraction for: '{match_text}' -> {extracted_date}")
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Regex parsing exception: {e}")
 
         # 2. 🧪 Use dateparser if regex didn't catch it
         if not extracted_date:
@@ -137,26 +144,28 @@ async def process_voice_command(user_text: str, current_time: str = None):
                     else:
                         extracted_date = extracted_date.astimezone(tz_ist)
 
-                    # AM/PM Ambiguity Check
+                    # AM/PM Ambiguity Check for Dateparser
                     is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
                     if is_ambiguous and extracted_date < base_time_ist and extracted_date.date() == base_time_ist.date():
                         potential_pm = extracted_date + dt_module.timedelta(hours=12)
                         if potential_pm > base_time_ist and potential_pm.date() == base_time_ist.date():
                              extracted_date = potential_pm
+                             logger.info(f"🧠 [NLP] Flipped AM to PM: {extracted_date}")
 
                     # 🌅 [Smart Midnight Fix]
                     # Only default to 9 AM if the match is purely a day (like "tomorrow") 
-                    # without any specific digits or time markers.
+                    # AND it has no numbers, no am/pm, etc.
                     if extracted_date.hour == 0 and extracted_date.minute == 0:
-                        has_time_cue = re.search(r'\d', match_text) or "am" in match_text.lower() or "pm" in match_text.lower()
+                        has_time_cue = re.search(r'\d', match_text) or "am" in match_text.lower() or "pm" in match_text.lower() or ":" in match_text
                         if not has_time_cue and "midnight" not in user_text.lower():
                             extracted_date = extracted_date.replace(hour=9, minute=0)
-                            logger.info(f"🌅 [Defaulting] Vague date '{match_text}' to 9:00 AM")
+                            logger.info(f"🌅 [NLP] Defaulted vague date '{match_text}' to 9:00 AM")
 
-                    # Past Fix (Next Day)
+                    # Past Fix (Next Day) - Only for NLP
                     if (extracted_date - base_time_ist).total_seconds() < -300:
                         if "yesterday" not in match_text.lower():
                             extracted_date += dt_module.timedelta(days=1)
+                            logger.info(f"🧠 [NLP] Past time detected, bumped to tomorrow: {extracted_date}")
                 
             except Exception as dp_err:
                 logger.error(f"Dateparser error: {dp_err}")
@@ -164,6 +173,7 @@ async def process_voice_command(user_text: str, current_time: str = None):
         # 3. Final Fallback (3 hours from now)
         if not extracted_date:
             extracted_date = base_time_ist + dt_module.timedelta(hours=3)
+            logger.info(f"🆘 [Fallback] No date found, using +3h: {extracted_date}")
             clean_text = user_text
         else:
             clean_text = user_text.replace(match_text, "").strip()

@@ -6,7 +6,6 @@ from app.schemas.task import TaskCreate, TaskUpdate
 async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
     import logging
     from datetime import timezone, timedelta
-    import pytz
     
     logger = logging.getLogger(__name__)
     
@@ -28,9 +27,9 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
                 normalized_due_date = normalized_due_date.astimezone(timezone.utc)
             else:
                 # Treat Naive as IST (Asia/Kolkata)
-                ist_tz = pytz.timezone('Asia/Kolkata')
+                ist_tz = timezone(timedelta(hours=5, minutes=30))
                 # Localize as IST
-                dt_ist = ist_tz.localize(normalized_due_date)
+                dt_ist = normalized_due_date.replace(tzinfo=ist_tz)
                 # Convert to UTC
                 normalized_due_date = dt_ist.astimezone(timezone.utc)
                 

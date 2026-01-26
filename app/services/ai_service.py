@@ -137,14 +137,16 @@ async def process_voice_command(user_text: str, current_time: str = None):
             # The user requested explicit Asia/Kolkata handling.
             # We can force the timezone if the result is naive.
             
-            import pytz
-            tz = pytz.timezone('Asia/Kolkata')
+            # IST = UTC + 5:30
+            tz_ist = timezone(timedelta(hours=5, minutes=30))
             
-            # Helper to localize if naive
+            # Helper to localize if naive (assuming it's intended as local time)
             def ensure_tz(dt):
                 if dt.tzinfo is None:
-                    return tz.localize(dt)
-                return dt.astimezone(tz)
+                    # If it's from dateparser with RELATIVE_BASE as IST aware, 
+                    # we should treat naive as IST
+                    return dt.replace(tzinfo=tz_ist)
+                return dt.astimezone(tz_ist)
 
             extracted_date = ensure_tz(extracted_date)
             base_time = ensure_tz(base_time)
@@ -230,11 +232,10 @@ async def process_voice_command(user_text: str, current_time: str = None):
 
             # Ensure base_time is localized to IST for manual hour replacement logic
             # This is crucial so that .replace(hour=10) means 10 AM IST, not 10 AM UTC.
-            import pytz
-            tz_ist = pytz.timezone('Asia/Kolkata')
+            tz_ist = timezone(timedelta(hours=5, minutes=30))
             
             if base_time.tzinfo is None:
-                base_time_ist = tz_ist.localize(base_time)
+                base_time_ist = base_time.replace(tzinfo=tz_ist)
             else:
                 base_time_ist = base_time.astimezone(tz_ist)
 
@@ -373,12 +374,11 @@ async def process_voice_command(user_text: str, current_time: str = None):
         # Friendly response text
         # Format extracted_date in IST (never show UTC to user)
         # extracted_date is already in IST timezone from ensure_tz above
-        import pytz
-        tz_ist = pytz.timezone('Asia/Kolkata')
+        tz_ist = timezone(timedelta(hours=5, minutes=30))
         
         # Ensure it's in IST for user-facing time display
         if extracted_date.tzinfo is None:
-            display_time = tz_ist.localize(extracted_date)
+            display_time = extracted_date.replace(tzinfo=tz_ist)
         else:
             display_time = extracted_date.astimezone(tz_ist)
         

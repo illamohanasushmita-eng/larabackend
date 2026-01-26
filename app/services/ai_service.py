@@ -163,23 +163,49 @@ async def process_voice_command(user_text: str, current_time: str = None):
                 extracted_date += dt_module.timedelta(days=1)
 
         # --- C. Finalize and Save (Immediate) ---
-        clean_title = user_text
+        clean_title = user_text.strip()
+        
+        # 1. 👥 Pronoun Shift (1st -> 2nd Person)
+        # We do this FIRST so we can later strip "remind you to" as well as "remind me to"
+        repls = [
+            (r"\bI'm\b", "You're"), (r"\bi am\b", "you are"), (r"\bI\b", "You"),
+            (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are"),
+            (r"\bwe\b", "you"), (r"\bu\b", "you")
+        ]
+        for p, r in repls:
+            clean_title = re.sub(p, r, clean_title, flags=re.IGNORECASE).strip()
+
+        # 2. 🧹 Broad Residue Clean
+        # Strip extracted time match
         if match_text:
              clean_title = re.sub(re.escape(match_text), "", clean_title, flags=re.IGNORECASE).strip()
 
-        # 🧹 Broad residue cleaning
-        clean_title = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock)\b', '', clean_title, flags=re.IGNORECASE).strip()
+        # Strip remaining time markers (:00, pm, am, etc.)
+        clean_title = re.sub(r'\b\d{1,2}(?::\d{2})?\s*(?:am|pm|o\'?clock|oclock)\b', '', clean_title, flags=re.IGNORECASE).strip()
+        
+        # 3. 🧹 Fillers & Instructional Phrases
+        # Catching both Persons (me/you) to be safe
+        fillers = [
+            r"remind (?:me|you) to", r"remind (?:me|you)", r"add task to", 
+            r"i need to", r"you need to", r"create (?:a )?task to", r"create (?:a )?task for",
+            r"set (?:a )?reminder for", r"tell (?:me|you) to", r"call", r"please"
+        ]
+        for f in fillers:
+            clean_title = re.sub(r'^' + f + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
+
+        # 4. 🧹 Specific noise (today, tomorrow, tonight, etc.)
+        for n in ["today", "tomorrow", "tonight", "this morning", "this evening"]:
+            clean_title = re.sub(r'\b' + n + r'\b', '', clean_title, flags=re.IGNORECASE).strip()
+
+        # 5. 🧹 Preposition Clean (Trailing and Leading)
         clean_title = re.sub(r'\b(at|on|for|in|to|with|by|around)\s*$', '', clean_title, flags=re.IGNORECASE).strip()
-
-        # 👥 Pronoun Shift
-        repls = [(r"\bI'm\b", "You're"), (r"\bi am\b", "you are"), (r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are")]
-        for p, r in repls: clean_title = re.sub(p, r, clean_title, flags=re.IGNORECASE).strip()
-
-        # 🧹 Leading Filler Clean
-        for v in ["remind me to", "remind me", "add task to", "i need to", "create task", "call"]:
-            clean_title = re.sub(r'^' + v + r'\s*', '', clean_title, flags=re.IGNORECASE).strip()
-
+        clean_title = re.sub(r'^(?:at|on|for|in|to|with|by|around)\s*', '', clean_title, flags=re.IGNORECASE).strip()
+        
         final_title = (clean_title or "New Task").capitalize()
+        # Remove double spaces
+        final_title = re.sub(r'\s+', ' ', final_title).strip()
+
+        # Final Formatting
         pretty_time = extracted_date.strftime("%I:%M %p")
         day_label = "today" if extracted_date.date() == now_ist.date() else ("tomorrow" if (extracted_date.date() - now_ist.date()).days == 1 else extracted_date.strftime("%b %d"))
 

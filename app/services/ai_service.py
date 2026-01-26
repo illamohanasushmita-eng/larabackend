@@ -53,29 +53,27 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list):
 async def process_voice_command(user_text: str, current_time: str = None):
     """
     Advanced voice parser using dateparser for natural language time extraction.
-    Supports: "tomorrow at 10am", "in 30 mins", "next friday", "at 6pm"
+    Ensures safe scoping and logic for IST/UTC handling.
     """
+    import datetime as dt_module
+    
+    # Standard IST Definition
+    tz_ist = dt_module.timezone(dt_module.timedelta(hours=5, minutes=30))
+
     try:
-        # 1. Setup Base Time
-        # Use provided current_time (ISO string) or system time
+        # Determine Base Time in UTC
         if current_time:
             try:
-                base_time = datetime.fromisoformat(current_time.replace('Z', '+00:00'))
+                base_time_utc = dt_module.datetime.fromisoformat(current_time.replace('Z', '+00:00'))
             except ValueError:
-                base_time = datetime.now(timezone.utc)
+                base_time_utc = dt_module.datetime.now(dt_module.timezone.utc)
         else:
-            base_time = datetime.now(timezone.utc)
+            base_time_utc = dt_module.datetime.now(dt_module.timezone.utc)
 
-        # Ensure timezone unaware for simpler comparisons/math if needed, or stick to offset-naive for calculation
-        # But if fromisoformat returns offset-aware, we should be consistent.
-        # Let's use valid local time logic.
-        # Ideally, we work with naive objects if the app is simple single-timezone,
-        # OR we just trust dateparser to handle relative deltas.
+        # Convert Base Time to IST for logic
+        base_time_ist = base_time_utc.astimezone(tz_ist)
         
-        # For 'today' checks, we need to know what 'today' is in the user's timezone.
-        # Since we use 'base_time' as RELATIVE_BASE, dateparser handles it.
-        
-        logger.info(f"Processing Voice: '{user_text}' at {base_time}")
+        logger.info(f"Processing Voice: '{user_text}' (IST Ref: {base_time_ist})")
 
         response = {
             "title": "",
@@ -85,313 +83,126 @@ async def process_voice_command(user_text: str, current_time: str = None):
             "response_text": ""
         }
 
-        # 2. Extract Date/Time
-        # settings: PREFER_DATES_FROM='future' helps resolve "10am" to tomorrow if 10am passed? 
-        # Actually 'future' prefers future dates for ambiguous periods.
-        extracted_date = None
-        extracted_text = ""
-        
+        matches = None
         try:
-            # search_dates returns list of (text, datetime)
-            # Enable lenient period parsing
-            # dateparser sometimes prefers AM if ambiguous.
-            # We will use PREFER_DATES_FROM='future' combined with a period check.
-            matches = search_dates(user_text, settings={'RELATIVE_BASE': base_time, 'PREFER_DATES_FROM': 'future', 'TIMEZONE': 'Asia/Kolkata', 'TO_TIMEZONE': 'Asia/Kolkata', 'PREFER_DAY_OF_MONTH': 'current'})
+            # Use data parser with IST base
+            matches = search_dates(user_text, settings={
+                'RELATIVE_BASE': base_time_ist, 
+                'PREFER_DATES_FROM': 'future', 
+                'TIMEZONE': 'Asia/Kolkata', 
+                'TO_TIMEZONE': 'Asia/Kolkata', 
+                'PREFER_DAY_OF_MONTH': 'current'
+            })
         except Exception as dp_err:
             logger.error(f"Dateparser error: {dp_err}")
-            matches = None
+
+        extracted_date = None
+        match_text = ""
+        clean_text = user_text
 
         if matches:
-            # Usually the last match is the most relevant if multiple dates mentioned?
-            # Or the one that looks like a due date.
-            # Example: "Schedule meeting on Friday at 5pm" -> "Friday at 5pm" might be one match or two.
-            # dateparser usually grabs the longest chunk if logical.
-            
-            # We take the match that covers the "time" intent
-            # Let's pick the last one found as it's often at the end of sentence "Call mom at 5"
             match_text, match_dt = matches[-1]
-            
             extracted_date = match_dt
-            extracted_text = match_text
             
-            logger.info(f"🔍 [DateParser] Raw match: '{match_text}' -> {match_dt}")
-            
-            # Custom Rule: "If time passes for today -> schedule for next day"
-            # matches[-1] might be "10 am"
-            # If base_time is 2pm, dateparser with 'future' might yield tomorrow 10am OR today 10am depending on config.
-            # Let's explicitly enforce the rule:
-            # If the user SAID "today 10am", we assume they mean it (even if past).
-            # If the user SAID "10am" (implied today) and it's past, move to tomorrow.
-            
-            # Heuristic: Check if 'today' or explicit date was in the text.
-            # If 'today' or 'tomorrow' or 'monday' NOT in match_text, and only time was matched...
-            # This is hard to detect perfectly.
-            # Simpler Rule: If the extracted date is more than 5 minutes in the PAST relative to base_time,
-            # AND the user text did NOT explicitly say "yesterday" or a past date keyword,
-            # THEN add 1 day.
-            
-            # Ensure timezone awareness (Asia/Kolkata) if needed, but for now we rely on consistent base_time
-            # If base_time is naive, result is naive. If base_time is aware, result is aware.
-            # The user requested explicit Asia/Kolkata handling.
-            # We can force the timezone if the result is naive.
-            
-            # IST = UTC + 5:30
-            tz_ist = timezone(timedelta(hours=5, minutes=30))
-            
-            # Helper to localize if naive (assuming it's intended as local time)
-            def ensure_tz(dt):
-                if dt.tzinfo is None:
-                    # If it's from dateparser with RELATIVE_BASE as IST aware, 
-                    # we should treat naive as IST
-                    return dt.replace(tzinfo=tz_ist)
-                return dt.astimezone(tz_ist)
+            # Localize result to IST if naive
+            if extracted_date.tzinfo is None:
+                extracted_date = extracted_date.replace(tzinfo=tz_ist)
+            else:
+                extracted_date = extracted_date.astimezone(tz_ist)
 
-            extracted_date = ensure_tz(extracted_date)
-            base_time = ensure_tz(base_time)
-            
-            logger.info(f"🕐 [Timezone] After ensure_tz: {extracted_date}, base: {base_time}")
-
-            # --- AM/PM Ambiguity Fix ---
-            # If user said "10 o clock" (ambiguous) -> dateparser might guess AM.
-            # If 10 AM is in the past (and within today), flip to 10 PM.
-            # Only do this if the user did NOT explicitly say "AM".
-            # Check original text for "am" or "morning".
-            
-            # Simple check: If dateparser gave us a time < base_time (on the same day),
-            # AND the shift to PM puts it in the future, we assume PM.
-            
+            # AM/PM Ambiguity Check
             is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
-            logger.info(f"❓ [Ambiguity] is_ambiguous={is_ambiguous}, match_text='{match_text}'")
-            
-            if is_ambiguous:
-                # Need to handle potential naive/aware comparison if dateparser returned naive
-                # extracted_date is already ensure_tz'd up top.
-                
-                # If extracted is earlier than now (e.g. 10:00 < 14:00)
-                # Note: extracted_date and base_time are both aware (Asia/Kolkata) from ensure_tz lines above
-                if extracted_date < base_time and extracted_date.date() == base_time.date():
-                    # Try adding 12 hours
-                    potential_pm = extracted_date + timedelta(hours=12)
-                    # If that makes it valid (future), use it
-                    # Also ensure it's still the same day (don't accidentally jump to next day if it was 11:59 AM -> 11:59 PM is ok)
-                    if potential_pm > base_time and potential_pm.date() == base_time.date():
-                         logger.info(f"⏰ [Flip] {extracted_date} -> {potential_pm} (AM to PM)")
-                         extracted_date = potential_pm
-                    else:
-                         logger.info(f"⏰ [Flip] Skipped (would go to next day or still past)")
-                else:
-                    logger.info(f"⏰ [Flip] Skipped (already future or different day)")
+            if is_ambiguous and extracted_date < base_time_ist and extracted_date.date() == base_time_ist.date():
+                potential_pm = extracted_date + dt_module.timedelta(hours=12)
+                if potential_pm > base_time_ist and potential_pm.date() == base_time_ist.date():
+                     extracted_date = potential_pm
 
-            time_diff = extracted_date - base_time
-            
-            # --- Midnight Default Fix ---
-            # If dateparser returned midnight (00:00) and user didn't say "midnight/night":
-            # This happens when user says "tomorrow" without a time
-            # Default to 9 AM instead of midnight
+            # Midnight Fix
             if extracted_date.hour == 0 and extracted_date.minute == 0:
-                if "midnight" not in user_text.lower() and "night" not in match_text.lower() and "12 am" not in user_text.lower():
-                    # User probably meant "tomorrow" (during the day)
-                    # Set to 9 AM
+                if "midnight" not in user_text.lower() and "night" not in match_text.lower():
                     extracted_date = extracted_date.replace(hour=9, minute=0)
-                    logger.info(f"🌅 [Midnight Fix] Changed 00:00 -> 09:00 (assumed morning)")
-            
-            # If it's in the past (allow 5 min buffer)
-            if time_diff.total_seconds() < -300: 
-                # Check for explicit past keywords to avoid altering "Remind me what I did yesterday" (though that's not a task)
-                lower_match = match_text.lower()
-                if "yesterday" not in lower_match and "last" not in lower_match:
-                     logger.info(f"Time {extracted_date} is in past. Moving to next day.")
-                     extracted_date += timedelta(days=1)
 
-            # Format time for response (ISO with timezone)
-            response["time"] = extracted_date.isoformat()
-            
-            # Clean title: Remove the matched date string from the original text
-            # We use replace, but be careful of overlapping/repeated words.
-            # Use regex to replace the specific match index if possible, OR string replace.
-            # match_text usually matches exactly from source.
+            # Past Fix (Next Day)
+            if (extracted_date - base_time_ist).total_seconds() < -300:
+                if "yesterday" not in match_text.lower():
+                    extracted_date += dt_module.timedelta(days=1)
+
             clean_text = user_text.replace(match_text, "").strip()
-            
-            # Cleanup extra prepositions left over: "Call mom at" -> "Call mom"
-            clean_text = re.sub(r'\bat\s*$', '', clean_text, flags=re.IGNORECASE).strip()
-            clean_text = re.sub(r'\bon\s*$', '', clean_text, flags=re.IGNORECASE).strip()
-            
+            # Save ISO format (IST)
+            response["time"] = extracted_date.isoformat()
+
         else:
-            # 3. Default Time (+3 hours)
-            # 🚨 Fallback Logic failed. But maybe our parsing failed on simple "10 o clock" cases?
-            # Let's try a custom fallback Regex for "10 o clock" missed by dateparser
-            
-            # Simple Regex for "X o clock" or "at X"
+            # Fallback Manual Regex
             fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
             if not fallback_match:
                  fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
             
-            extracted_date = None
-
-            # Ensure base_time is localized to IST for manual hour replacement logic
-            # This is crucial so that .replace(hour=10) means 10 AM IST, not 10 AM UTC.
-            tz_ist = timezone(timedelta(hours=5, minutes=30))
-            
-            if base_time.tzinfo is None:
-                base_time_ist = base_time.replace(tzinfo=tz_ist)
-            else:
-                base_time_ist = base_time.astimezone(tz_ist)
-
             if fallback_match:
-                logger.info(f"🔄 [Fallback] Manually matched time: {fallback_match.group(0)}")
                 try:
                     h = int(fallback_match.group(1))
-                    
                     candidates = []
-                    val_am = h if h != 12 else 0 # 12 AM is 00:00
-                    val_pm = h + 12 if h != 12 else 12 # 12 PM is 12:00
-                    if val_pm >= 24: val_pm -= 12
+                    v_am = h if h != 12 else 0
+                    v_pm = h + 12 if h != 12 else 12
+                    if v_pm >= 24: v_pm -= 12
                     
-                    # Create timestamps for TODAY in IST context
-                    dt_am = base_time_ist.replace(hour=val_am, minute=0, second=0, microsecond=0)
-                    dt_pm = base_time_ist.replace(hour=val_pm, minute=0, second=0, microsecond=0)
+                    for h_val in sorted(list(set([v_am, v_pm]))):
+                        candidates.append(base_time_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
                     
-                    # Add to candidates if valid hour
-                    if 0 <= val_am < 24: candidates.append(dt_am)
-                    if 0 <= val_pm < 24 and dt_pm != dt_am: candidates.append(dt_pm)
-                    
-                    # Sort candidates
                     candidates.sort()
+                    future_candidates = [d for d in candidates if d > base_time_ist]
                     
-                    # Find first future date
-                    future_dates = [d for d in candidates if d > base_time_ist]
-                    
-                    if future_dates:
-                        extracted_date = future_dates[0]
+                    if future_candidates:
+                        extracted_date = future_candidates[0]
                     else:
-                        # If both passed today, assume tomorrow morning (AM candidate + 1 day)
-                        extracted_date = dt_am + timedelta(days=1)
+                        extracted_date = candidates[0] + dt_module.timedelta(days=1)
                         
                     response["time"] = extracted_date.isoformat()
-                    
-                    # Ensure we strip the EXACT matched phrase from the text
                     clean_text = user_text.replace(fallback_match.group(0), "").strip()
-                    
-                    # Let's run a general cleanup for dangling "at" or "on" at the end of the cleaned text
-                    clean_text = re.sub(r'\bat\s*$', '', clean_text, flags=re.IGNORECASE).strip()
-                    clean_text = re.sub(r'\bon\s*$', '', clean_text, flags=re.IGNORECASE).strip()
-                    
-                    logger.info(f"📍 [Fallback] Smartly picked: {extracted_date}")
-                    
-                except Exception as e:
-                     logger.error(f"Fallback parse failed: {e}")
-            
-            if not extracted_date:
-                clean_text = user_text
-                default_due = base_time + timedelta(hours=3)
-                extracted_date = default_due
-                response["time"] = default_due.isoformat()
+                except:
+                    pass
 
-        # 4. Smart Title Extraction (Verbs)
-        # Similar to previous logic but on the clean_text
-        
-        action_verbs = [
-            "call", "email", "text", "message", "whatsapp",
-            "buy", "get", "purchase", "order",
-            "meet", "schedule", "attend",
-            "pay", "transfer", "send",
-            "clean", "wash", "fix", "repair",
-            "finish", "submit", "complete", "do",
-            "read", "write", "study", "visit", "go to"
-        ]
-        
-        # 🧪 Type Detection
+        if not extracted_date:
+            extracted_date = base_time_ist + dt_module.timedelta(hours=3)
+            response["time"] = extracted_date.isoformat()
+            clean_text = user_text
+
+        # Cleanup leftover prepositions
+        clean_text = re.sub(r'\b(at|on|for)\s*$', '', clean_text, flags=re.IGNORECASE).strip()
+
+        # Title Selection
+        action_verbs = ["call", "email", "text", "buy", "get", "meet", "schedule", "pay", "send", "clean", "do", "study", "go to"]
         lower_text = user_text.lower()
-        if any(word in lower_text for word in ["meeting", "meet", "appointment", "zoom", "call"]):
-            response["type"] = "meeting"
-        elif any(word in lower_text for word in ["remind", "reminder", "alarm"]):
-            response["type"] = "reminder"
+        
+        if any(w in lower_text for w in ["meeting", "meet", "appointment"]): response["type"] = "meeting"
+        elif any(w in lower_text for w in ["remind", "reminder", "alarm"]): response["type"] = "reminder"
+        
+        final_start = 0
+        remind_m = re.search(r"remind\s+(?:me|us)\s+to\s+", clean_text.lower())
+        if remind_m:
+            final_start = remind_m.end()
         else:
-            response["type"] = "task"
-            
-        lower_clean = clean_text.lower()
-        final_start_index = 0
-        
-        # Priority: "Remind me to"
-        remind_match = re.search(r"remind\s+(?:me|us)\s+to\s+", lower_clean)
-        
-        if remind_match:
-            final_start_index = remind_match.end()
-        else:
-            # Verb Search
-            verb_pattern = r"\b(" + "|".join(action_verbs) + r")\b"
-            verb_match = re.search(verb_pattern, lower_clean)
-            if verb_match:
-                # If verb is 'start' of sentence (ignoring filler "I want to...")
-                final_start_index = verb_match.start()
-            else:
-                # Fallback prefixes
-                prefixes = [
-                    r"add\s+a\s+task\s+to\s+", r"add\s+task\s+to\s+",
-                    r"create\s+a\s+task\s+to\s+", r"new\s+task\s+",
-                    r"i\s+need\s+to\s+", r"i\s+have\s+to\s+", r"please\s+"
-                ]
-                for p in prefixes:
-                    m = re.match(p, lower_clean)
-                    if m:
-                        final_start_index = m.end()
-                        break
-        
-        real_title = clean_text[final_start_index:].strip()
-        # Remove trailing politeness
-        real_title = re.sub(r"\s+(please|thanks|thank you)\W*$", "", real_title, flags=re.IGNORECASE)
-        real_title = real_title.strip()
-        
-        # 5. Personalize Pronouns (I -> You, My -> Your)
-        # Apply strict word boundary checks
-        replacements = [
-            (r"\bI'm\b", "You're"),
-            (r"\bI\b", "You"),
-            (r"\bmy\b", "your"),
-            (r"\bMy\b", "Your"),
-            (r"\bme\b", "you"),
-            (r"\bam\b", "are"),
-             # Optional: "myself" -> "yourself" handling if needed, but basic set covers 95%
-        ]
-        
-        # Apply replacements to the title
-        # We process matches case-insensitively for the search, but simple Sub works if we use flags.
-        # However, `re.sub` needs to be done carefully to preserve original case if not matched,
-        # but here we WANT to change the word.
-        
-        for pattern, replacement in replacements:
-            real_title = re.sub(pattern, replacement, real_title, flags=re.IGNORECASE)
-            
-        if not real_title:
-            # If we stripped everything, use original?
-            real_title = "New Task"
+            verb_m = re.search(r"\b(" + "|".join(action_verbs) + r")\b", clean_text.lower())
+            if verb_m: final_start = verb_m.start()
 
-        response["title"] = real_title.capitalize()
+        real_title = clean_text[final_start:].strip()
+        real_title = re.sub(r"\s+(please|thanks|thank you)\W*$", "", real_title, flags=re.IGNORECASE).strip()
+        
+        # Pronoun replacement
+        repls = [(r"\bI'm\b", "You're"), (r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are")]
+        for p, r in repls:
+            real_title = re.sub(p, r, real_title, flags=re.IGNORECASE)
+
+        response["title"] = (real_title or "New Task").capitalize()
         response["is_complete"] = True
         
-        # Friendly response text
-        # Format extracted_date in IST (never show UTC to user)
-        # extracted_date is already in IST timezone from ensure_tz above
-        tz_ist = timezone(timedelta(hours=5, minutes=30))
-        
-        # Ensure it's in IST for user-facing time display
-        if extracted_date.tzinfo is None:
-            display_time = extracted_date.replace(tzinfo=tz_ist)
-        else:
-            display_time = extracted_date.astimezone(tz_ist)
-        
-        pretty_time = display_time.strftime("%I:%M %p")
-        
-        if matches:
-            response["response_text"] = f"Got it! Scheduled '{response['title']}' for {pretty_time}. ✅"
-        else:
-            # Auto +3h
-            response["response_text"] = f"Added '{response['title']}'. Due at {pretty_time} (in 3 hrs). ✅"
+        # Pretty display time
+        pretty_time = extracted_date.strftime("%I:%M %p")
+        response["response_text"] = f"Got it! Scheduled '{response['title']}' for {pretty_time}. ✅"
 
         return response
 
-    except Exception as e:
-        logger.error(f"Logic Voice processing failed: {e}")
+    except Exception as exc:
+        logger.error(f"Voice processing CRITICAL fail: {exc}")
         return {
             "title": "",
             "time": None,

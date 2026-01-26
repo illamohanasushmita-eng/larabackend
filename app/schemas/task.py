@@ -57,6 +57,7 @@ class PlanResponse(BaseModel):
     sections: List[PlanSection]
     total_count: int
     time_bound_count: int
+    upcoming: List[TaskResponse] = []
 
 class SummaryResponse(BaseModel):
     completed_count: int

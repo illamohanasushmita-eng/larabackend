@@ -197,7 +197,10 @@ async def process_voice_command(user_text: str, current_time: str = None):
         
         # Pretty display time
         pretty_time = extracted_date.strftime("%I:%M %p")
-        response["response_text"] = f"Got it! Scheduled '{response['title']}' for {pretty_time}. ✅"
+        
+        # Determine day label for voice response
+        day_label = "today" if extracted_date.date() == base_time_ist.date() else "tomorrow"
+        response["response_text"] = f"Got it! Scheduled '{response['title']}' for {day_label} at {pretty_time}. ✅"
 
         return response
 

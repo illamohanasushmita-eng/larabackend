@@ -217,12 +217,45 @@ async def process_voice_command(user_text: str, current_time: str = None):
             
         else:
             # 3. Default Time (+3 hours)
-            clean_text = user_text
-            default_due = base_time + timedelta(hours=3)
-            # Start of next hour for cleanliness? Or exact +3h
-            # Requirement: "current time + 3 hours"
-            response["time"] = default_due.isoformat()
-            extracted_date = default_due # For message formatting
+            # 🚨 Fallback Logic failed. But maybe our parsing failed on simple "10 o clock" cases?
+            # Let's try a custom fallback Regex for "10 o clock" missed by dateparser
+            
+            # Simple Regex for "X o clock" or "at X"
+            import re
+            fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
+            if not fallback_match:
+                 fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
+            
+            extracted_date = None
+
+            if fallback_match:
+                logger.info(f"🔄 [Fallback] Manually matched time: {fallback_match.group(0)}")
+                try:
+                    h = int(fallback_match.group(1))
+                    if 0 <= h <= 24:
+                        extracted_date = base_time.replace(hour=h % 24, minute=0, second=0, microsecond=0)
+                        
+                        # Heuristic: If 10 -> 10 AM. If 10 PM intended, user usually says PM.
+                        # But if 10 AM is in the past, maybe they meant 10 PM?
+                        if extracted_date < base_time:
+                            # Try adding 12 hours
+                            potential_pm = extracted_date + timedelta(hours=12)
+                            if potential_pm > base_time:
+                                extracted_date = potential_pm
+                            else:
+                                # Both 10 AM and 10 PM are past today (e.g. it's 11 PM), schedule for tomorrow 10 AM
+                                extracted_date = extracted_date + timedelta(days=1)
+                        
+                        response["time"] = extracted_date.isoformat()
+                        clean_text = user_text.replace(fallback_match.group(0), "").strip()
+                except Exception as e:
+                     logger.error(f"Fallback parse failed: {e}")
+            
+            if not extracted_date:
+                clean_text = user_text
+                default_due = base_time + timedelta(hours=3)
+                extracted_date = default_due
+                response["time"] = default_due.isoformat()
 
         # 4. Smart Title Extraction (Verbs)
         # Similar to previous logic but on the clean_text

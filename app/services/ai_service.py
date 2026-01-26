@@ -52,179 +52,144 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list):
 
 async def process_voice_command(user_text: str, current_time: str = None):
     """
-    Advanced voice parser using dateparser for natural language time extraction.
-    Ensures safe scoping and logic for IST/UTC handling.
+    LARA Conversational Voice Parser.
+    Follows a multi-step confirmation workflow.
     """
     import datetime as dt_module
     
-    # Standard IST Definition
     tz_ist = dt_module.timezone(dt_module.timedelta(hours=5, minutes=30))
-
-    try:
-        # Determine Base Time in UTC
-        if current_time:
-            try:
-                base_time_utc = dt_module.datetime.fromisoformat(current_time.replace('Z', '+00:00'))
-            except ValueError:
-                base_time_utc = dt_module.datetime.now(dt_module.timezone.utc)
-        else:
-            base_time_utc = dt_module.datetime.now(dt_module.timezone.utc)
-
-        # Convert Base Time to IST for logic
-        base_time_ist = base_time_utc.astimezone(tz_ist)
-        
-        logger.info(f"Processing Voice: '{user_text}' (IST Ref: {base_time_ist})")
-
-        response = {
-            "title": "",
+    now_ist = dt_module.datetime.now(dt_module.timezone.utc).astimezone(tz_ist)
+    
+    input_text = user_text.lower().strip()
+    
+    # --- STEP 1: Handle Confirmation/Cancellation ---
+    # We use 'current_time' parameter as a signal if the frontend is already in a 'pending' state
+    # But a cleaner way is to check the text for confirmation keywords.
+    confirm_words = ['yes', 'confirm', 'save', 'okay', 'ok', 'do it', 'yep', 'sure']
+    cancel_words = ['no', 'cancel', 'stop', 'dont', "don't", 'nevermind']
+    
+    # Check if this input is a response to a PREVIOUS confirmation request
+    # Logic: if the input is JUST a confirmation word
+    if input_text in confirm_words:
+        return {
+            "title": "", # Frontend will use its cached pending title
             "time": None,
             "type": "task",
-            "is_complete": False,
-            "response_text": ""
+            "response_text": "Done! Your reminder is saved. ✨",
+            "is_complete": True # 🚀 THIS TRIPS THE SAVE IN FRONTEND
         }
-
-        matches = None
-        extracted_date = None
-        match_text = ""
-        clean_text = user_text
-
-        # 1. 🛡️ Prioritize Manual Regex for "o'clock" and "at X"
-        # Expanded to handle: "o clock", "o'clock", "oclock", "am/pm"
-        fallback_match = re.search(r'\b(\d{1,2})\s*(?:o\'?\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
-        if not fallback_match:
-             # Handle "at 4" or "at 10" patterns
-             fallback_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
-        
-        if fallback_match:
-            try:
-                h = int(fallback_match.group(1))
-                candidates = []
-                # Handle 12 AM/PM correctly (12 AM -> 00, 12 PM -> 12)
-                v_am = h if h != 12 else 0
-                v_pm = h + 12 if h != 12 else 12
-                # If user says 13-23, they likely mean 24h format, which fits v_pm
-                if v_pm >= 24: v_pm -= 12
-                
-                # Check Today's candidates
-                for h_val in sorted(list(set([v_am, v_pm]))):
-                    candidates.append(base_time_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
-                
-                candidates.sort()
-                future_candidates = [d for d in candidates if d > (base_time_ist + dt_module.timedelta(minutes=1))]
-                
-                if future_candidates:
-                    extracted_date = future_candidates[0]
-                    logger.info(f"🎯 [Regex] Found future candidate for today: {extracted_date}")
-                else:
-                    # Both passed today, assume morning of next day 
-                    # Use v_am (or at least h) for tomorrow
-                    extracted_date = candidates[0] + dt_module.timedelta(days=1)
-                    logger.info(f"🎯 [Regex] Time passed today, moving to tomorrow: {extracted_date}")
-                
-                match_text = fallback_match.group(0)
-            except Exception as e:
-                logger.error(f"Regex parsing exception: {e}")
-
-        # 2. 🧪 Use dateparser if regex didn't catch it
-        if not extracted_date:
-            try:
-                matches = search_dates(user_text, settings={
-                    'RELATIVE_BASE': base_time_ist, 
-                    'PREFER_DATES_FROM': 'future', 
-                    'TIMEZONE': 'Asia/Kolkata', 
-                    'TO_TIMEZONE': 'Asia/Kolkata', 
-                    'PREFER_DAY_OF_MONTH': 'current'
-                })
-                if matches:
-                    match_text, match_dt = matches[-1]
-                    extracted_date = match_dt
-                    
-                    if extracted_date.tzinfo is None:
-                        extracted_date = extracted_date.replace(tzinfo=tz_ist)
-                    else:
-                        extracted_date = extracted_date.astimezone(tz_ist)
-
-                    # AM/PM Ambiguity Check for Dateparser
-                    is_ambiguous = "am" not in match_text.lower() and "morning" not in match_text.lower()
-                    if is_ambiguous and extracted_date < base_time_ist and extracted_date.date() == base_time_ist.date():
-                        potential_pm = extracted_date + dt_module.timedelta(hours=12)
-                        if potential_pm > base_time_ist and potential_pm.date() == base_time_ist.date():
-                             extracted_date = potential_pm
-                             logger.info(f"🧠 [NLP] Flipped AM to PM: {extracted_date}")
-
-                    # 🌅 [Smart Midnight Fix]
-                    # Only default to 9 AM if the match is purely a day (like "tomorrow") 
-                    # AND it has no numbers, no am/pm, etc.
-                    if extracted_date.hour == 0 and extracted_date.minute == 0:
-                        has_time_cue = re.search(r'\d', match_text) or "am" in match_text.lower() or "pm" in match_text.lower() or ":" in match_text
-                        if not has_time_cue and "midnight" not in user_text.lower():
-                            extracted_date = extracted_date.replace(hour=9, minute=0)
-                            logger.info(f"🌅 [NLP] Defaulted vague date '{match_text}' to 9:00 AM")
-
-                    # Past Fix (Next Day) - Only for NLP
-                    if (extracted_date - base_time_ist).total_seconds() < -300:
-                        if "yesterday" not in match_text.lower():
-                            extracted_date += dt_module.timedelta(days=1)
-                            logger.info(f"🧠 [NLP] Past time detected, bumped to tomorrow: {extracted_date}")
-                
-            except Exception as dp_err:
-                logger.error(f"Dateparser error: {dp_err}")
-
-        # 3. Final Fallback (3 hours from now)
-        if not extracted_date:
-            extracted_date = base_time_ist + dt_module.timedelta(hours=3)
-            logger.info(f"🆘 [Fallback] No date found, using +3h: {extracted_date}")
-            clean_text = user_text
-        else:
-            clean_text = user_text.replace(match_text, "").strip()
-
-        # Save ISO format (IST)
-        response["time"] = extracted_date.isoformat()
-
-        # Cleanup leftover prepositions
-        clean_text = re.sub(r'\b(at|on|for)\s*$', '', clean_text, flags=re.IGNORECASE).strip()
-
-        # Title Selection
-        action_verbs = ["call", "email", "text", "buy", "get", "meet", "schedule", "pay", "send", "clean", "do", "study", "go to"]
-        lower_text = user_text.lower()
-        
-        if any(w in lower_text for w in ["meeting", "meet", "appointment"]): response["type"] = "meeting"
-        elif any(w in lower_text for w in ["remind", "reminder", "alarm"]): response["type"] = "reminder"
-        
-        final_start = 0
-        remind_m = re.search(r"remind\s+(?:me|us)\s+to\s+", clean_text.lower())
-        if remind_m:
-            final_start = remind_m.end()
-        else:
-            verb_m = re.search(r"\b(" + "|".join(action_verbs) + r")\b", clean_text.lower())
-            if verb_m: final_start = verb_m.start()
-
-        real_title = clean_text[final_start:].strip()
-        real_title = re.sub(r"\s+(please|thanks|thank you)\W*$", "", real_title, flags=re.IGNORECASE).strip()
-        
-        # Pronoun replacement
-        repls = [(r"\bI'm\b", "You're"), (r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you"), (r"\bam\b", "are")]
-        for p, r in repls:
-            real_title = re.sub(p, r, real_title, flags=re.IGNORECASE)
-
-        response["title"] = (real_title or "New Task").capitalize()
-        response["is_complete"] = True
-        
-        # Pretty display time
-        pretty_time = extracted_date.strftime("%I:%M %p")
-        
-        # Determine day label for voice response
-        day_label = "today" if extracted_date.date() == base_time_ist.date() else "tomorrow"
-        response["response_text"] = f"Got it! Scheduled '{response['title']}' for {day_label} at {pretty_time}. ✅"
-
-        return response
-
-    except Exception as exc:
-        logger.error(f"Voice processing CRITICAL fail: {exc}")
+    
+    if input_text in cancel_words:
         return {
             "title": "",
             "time": None,
             "type": "task",
-            "response_text": "I had trouble understanding that. Could you try again?",
-            "is_complete": False
+            "response_text": "Alright, I won’t add it. 😊",
+            "is_complete": False,
+            "is_cancelled": True # Signal to frontend to clear state
+        }
+
+    try:
+        # --- STEP 2: Logic for New Task or Missing Detail ---
+        # Extract matches
+        matches = search_dates(user_text, settings={
+            'RELATIVE_BASE': now_ist, 
+            'PREFER_DATES_FROM': 'future', 
+            'TIMEZONE': 'Asia/Kolkata', 
+            'TO_TIMEZONE': 'Asia/Kolkata'
+        })
+        
+        extracted_date = None
+        match_text = ""
+        
+        # Manual Regex for "at 4" or "at 10" or "o'clock"
+        regex_match = re.search(r'\b(\d{1,2})\s*(?:o\'?\s*clock|oclock|am|pm)\b', user_text, re.IGNORECASE)
+        if not regex_match:
+             regex_match = re.search(r'\bat\s+(\d{1,2})\b', user_text, re.IGNORECASE)
+
+        if regex_match:
+            try:
+                h = int(regex_match.group(1))
+                candidates = []
+                # Simple AM/PM logic for IST
+                v_am = h if h != 12 else 0
+                v_pm = h + 12 if h != 12 else 12
+                if v_pm >= 24: v_pm -= 12
+                for h_val in sorted(list(set([v_am, v_pm]))):
+                    candidates.append(now_ist.replace(hour=h_val, minute=0, second=0, microsecond=0))
+                candidates.sort()
+                future = [d for d in candidates if d > (now_ist + dt_module.timedelta(minutes=1))]
+                extracted_date = future[0] if future else (candidates[0] + dt_module.timedelta(days=1))
+                match_text = regex_match.group(0)
+            except: pass
+
+        if not extracted_date and matches:
+            match_text, match_dt = matches[-1]
+            extracted_date = match_dt if match_dt.tzinfo else match_dt.replace(tzinfo=tz_ist)
+            # Past Fix
+            if (extracted_date - now_ist).total_seconds() < -60: # 1 min buffer
+                 extracted_date += dt_module.timedelta(days=1)
+
+        # --- STEP 3: Persona-Driven Branching ---
+        
+        # A. If NO TIME found at all
+        if not extracted_date:
+            return {
+                "title": user_text.capitalize(),
+                "time": None,
+                "type": "task",
+                "response_text": "Sure. At what time should I set this reminder in IST? 🕒",
+                "is_complete": False
+            }
+
+        # B. If time is VAGUE (e.g. "morning", "evening", "tomorrow" without hour)
+        # Check if dateparser gave us a default 00:00 or if user just said "today"
+        is_vague = False
+        if extracted_date.hour == 0 and extracted_date.minute == 0:
+            if "midnight" not in input_text: is_vague = True
+        elif "evening" in input_text and not re.search(r'\d', match_text):
+            is_vague = True
+
+        if is_vague:
+            suggested_hour = 10 if "morning" in input_text else 18 # 10am or 6pm
+            day_str = "today" if extracted_date.date() == now_ist.date() else "tomorrow"
+            
+            # 🕒 Update the date object to match the suggestion
+            extracted_date = extracted_date.replace(hour=suggested_hour, minute=0, second=0, microsecond=0)
+            
+            return {
+                "title": user_text.replace(match_text, "").strip().capitalize(),
+                "time": extracted_date.isoformat(), # Updated to 10am or 6pm
+                "type": "task",
+                "response_text": f"Do you mean {day_str} at {suggested_hour % 12 or 12} {'PM' if suggested_hour >= 12 else 'AM'} IST? 🧐",
+                "is_complete": False
+            }
+
+        # C. Ready for Final Confirmation (Rule 6)
+        clean_title = user_text.replace(match_text, "").strip()
+        # Clean title logic (verbs, pronouns)
+        action_verbs = ["remind me to", "add task to", "i need to", "call", "buy", "meet"]
+        for v in action_verbs: clean_title = re.sub(r'^' + v, '', clean_title, flags=re.IGNORECASE).strip()
+        
+        # Personalize Pronouns
+        repls = [(r"\bI\b", "You"), (r"\bmy\b", "your"), (r"\bme\b", "you")]
+        for p, r in repls: clean_title = re.sub(p, r, clean_title, flags=re.IGNORECASE).strip()
+        
+        final_title = (clean_title or "New Task").capitalize()
+        pretty_time = extracted_date.strftime("%I:%M %p")
+        day_label = "Today" if extracted_date.date() == now_ist.date() else "Tomorrow"
+        
+        return {
+            "title": final_title,
+            "time": extracted_date.isoformat(),
+            "type": "reminder" if "remind" in input_text else "task",
+            "response_text": f"Okay, I will add this reminder:\nTask: {final_title}\nTime: {day_label} at {pretty_time} IST\nShould I confirm and save it? 😊",
+            "is_complete": False # 🛑 ALWAYS False here, waiting for "Yes"
+        }
+
+    except Exception as exc:
+        logger.error(f"LARA Critical Error: {exc}")
+        return {
+            "title": "", "time": None, "type": "task", "is_complete": False,
+            "response_text": "I'm sorry, I'm having a bit of trouble. Mind saying that again? 🙏"
         }

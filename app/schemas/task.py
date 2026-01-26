@@ -75,4 +75,5 @@ class VoiceProcessResponse(BaseModel):
     type: str
     response_text: str
     is_complete: bool
+    is_cancelled: bool = False
 

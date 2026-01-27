@@ -140,31 +140,31 @@ Current Local Time: {current_time if current_time else 'Unknown'}
 
 CORE MISSION:
 1. GRAMMAR ENHANCEMENT: Convert raw voice input into a professional, polished English action sentence in the **SECOND PERSON**. 
+   - **FIX BROKEN GRAMMAR**: Voice input is often broken (e.g., "i meeting", "i call"). You MUST fix this into polished English (e.g., "You have a meeting", "Call your mom").
    - **SECOND PERSON PERSPECTIVE (MANDATORY)**: Always convert user's 1st person speech into 2nd person text for the dashboard.
-     - "I" MUST become "You"
+     - "I" MUST become "You" or "You have"
      - "my" MUST become "your"
      - "me" MUST become "you"
-   - **DIRECT ACTION**: Prefer going straight to the action (e.g., "Call your mom" instead of "You need to call your mom").
-   - Fix grammar mistakes automatically.
-   - DO NOT respond as if you are the user. You are the Assistant observing the user.
+   - **PROFESSIONAL PHRASING**: Ensure the output sounds like a professional assistant wrote it.
+   - **DIRECT ACTION**: Prefer direct action (e.g., "Call your boss") or factual stance (e.g., "You have a meeting").
+   - DO NOT respond as if you are the user. You are the Assistant observing and documenting for the user.
 2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
 
 LIFECYCLE RULES:
 - **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar into a direct 2nd person action (e.g., "Call your mom."), and ask "At what time should I set this for you?".
-- **FOLLOW-UP INPUT** (Task + Time in same input): If the input contains BOTH a task description AND a time, set status="ready", create a polished 2nd person action sentence with time (e.g., "Call your mom at 7:00 PM."), and confirm "Got it. I've scheduled <title> for <time> IST."
+- **FOLLOW-UP INPUT** (Task + Time in same input): If the input contains BOTH a task description AND a time, set status="ready", create a polished 2nd person action sentence with time (e.g., "You have a meeting at 7:00 PM."), and confirm "Got it. I've scheduled <title> for <time> IST."
 - **CRITICAL**: If the input contains a task and a time, treat as COMPLETE (status="ready").
 - NEVER return empty strings for 'title' or 'corrected_sentence'.
-- Always preserve original intent while definitely shifting to 2nd person (You/Your).
 
 EXAMPLES:
 Input: "remind me I call mom"
 Output: {{"status": "incomplete", "title": "Call Your Mom", "corrected_sentence": "Call your mom.", "time": null, "type": "reminder", "message": "At what time should I set this for you?"}}
 
-Input: "i need to meet my friends at 5 pm"
-Output: {{"status": "ready", "title": "Meet Your Friends", "corrected_sentence": "You need to meet your friends at 5:00 PM.", "time": "2026-01-27T17:00:00", "type": "reminder", "message": "Got it. I've scheduled meeting your friends for 5:00 PM IST."}}
+Input: "i meeting at 7"
+Output: {{"status": "ready", "title": "Meeting", "corrected_sentence": "You have a meeting at 7:00 PM.", "time": "2026-01-27T19:00:00", "type": "task", "message": "Got it. I've noted that you have a meeting at 7:00 PM IST."}}
 
 Input: "call my boss tomorrow"
-Output: {{"status": "ready", "title": "Call Your Boss", "corrected_sentence": "Call your boss tomorrow.", "time": "2026-01-28T10:00:00", "type": "reminder", "message": "Got it. I've scheduled calling your boss for tomorrow."}}
+Output: {{"status": "ready", "title": "Call Your Boss", "corrected_sentence": "Call your boss tomorrow.", "time": "2026-01-28T09:00:00", "type": "task", "message": "Got it. I've scheduled calling your boss for tomorrow."}}
 
 Return ONLY a JSON object:
 {{

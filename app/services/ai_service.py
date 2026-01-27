@@ -76,3 +76,46 @@ Assistant Reply: <assistant response>"""
     except Exception as e:
         logger.error(f"Error calling Groq API: {str(e)}")
         return f"I encountered an error while processing your request: {str(e)}"
+
+async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) -> str:
+    """
+    Generates a daily summary (Morning/Evening) based on user's tasks.
+    """
+    client = get_groq_client()
+    if not client:
+        return ""
+
+    # Format tasks for the prompt
+    task_list_str = ""
+    if tasks:
+        for i, task in enumerate(tasks, 1):
+            time_str = "No time set"
+            if task.due_date:
+                # Format to IST time for the prompt
+                from datetime import timedelta
+                ist_time = task.due_date + timedelta(hours=5, minutes=30)
+                time_str = ist_time.strftime("%I:%M %p")
+            task_list_str += f"{i}. {task.title} (at {time_str})\n"
+    else:
+        task_list_str = "No tasks scheduled for today."
+
+    if summary_type == "MORNING":
+        system_prompt = f"You are LARA, a cheerful and supportive AI assistant. It's morning. Greet {user_name} and give them a brief, motivating summary of their tasks for today. Keep it short and friendly for a push notification."
+        user_prompt = f"Here are my tasks for today:\n{task_list_str}\n\nCan you give me a quick morning summary?"
+    else:
+        system_prompt = f"You are LARA, a polite AI assistant. It's evening. provide {user_name} a brief wrap-up of their day or a quick look at what's left. Keep it encouraging and very concise."
+        user_prompt = f"Here are my tasks for today:\n{task_list_str}\n\nCan you give me a quick evening summary?"
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model="llama-3.1-8b-instant",
+        )
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Error generating AI summary: {str(e)}")
+        return "You have some tasks scheduled for today. Have a productive day!" if summary_type == "MORNING" else "Hope you had a productive day!"
+

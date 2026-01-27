@@ -126,46 +126,44 @@ async def process_voice_command(text: str, current_time: str = None) -> dict:
     """
     client = get_groq_client()
     if not client:
+        logger.error("Groq client not initialized. Check GROQ_API_KEY.")
         return {
             "success": False,
-            "message": "I'm sorry, I cannot process your request right now.",
+            "message": "AI connection is not configured. Please add the GROQ_API_KEY to environment variables.",
             "requires_user_input": False,
-            "reason": "service_unavailable"
+            "reason": "missing_api_key"
         }
 
-    # Strict prompt for Time-First Assistant logic
-    system_prompt = f"""You are LARA, a dedicated AI Personal Assistant.
+    # Strict prompt for Conversational Assistant logic
+    system_prompt = f"""You are LARA, a talented AI Personal Assistant.
 Current Local Time: {current_time if current_time else 'Unknown'}
 
-Your goal is to parse user input into a task/reminder with a TITLE and a TIME.
-A TIME is mandatory for LARA to schedule anything.
-
-EXTRACT RULES:
-1. TITLE: Every request needs a title. If the user only says a time (e.g. "at 5 PM"), use "Pending Task" as the title.
-2. TIME: If a specific time is mentioned, extract it as an ISO 8601 string.
-3. MISSING TIME: If the user provides a task but NO time, you MUST set 'requires_user_input' to true and ask: "Sure. At what time should I set this reminder (IST)?"
-4. COMPLETE: If both are present, confirm clearly: "Got it. I will remind you to <title> at <time> IST."
+RULES:
+1. If the user mentions a task/reminder, set 'success' to true.
+2. If the TITLE is found but TIME is missing, set 'requires_user_input' to true and 'reason' to 'missing_time'.
+3. If the user provides ONLY a time (e.g. "at 5 PM"), it's likely a follow-up. Set 'title' to "Pending Task", 'success' to true, and 'requires_user_input' to false.
+4. If the input is completely irrelevant or silent, set 'success' to false.
+5. Provide a clear, polite, and helpful 'message' that sounds natural when spoken.
 
 Return ONLY a JSON object:
 {{
-  "success": true,
-  "title": string,
+  "success": boolean,
+  "title": string or null,
   "time": string (ISO 8601) or null,
   "type": "task" or "reminder",
-  "message": string (Spoken response),
+  "message": string,
   "requires_user_input": boolean,
-  "reason": "missing_time" | "complete"
+  "reason": "missing_time" | "complete" | "irrelevant"
 }}
 
-Example:
-Input: "Remind me to call dad"
-Output: {{"success": true, "title": "Call dad", "time": null, "type": "reminder", "message": "Sure. At what time should I set this reminder (IST)?", "requires_user_input": true, "reason": "missing_time"}}"""
+Example: "Remind me to buy milk" 
+Output: {{"success": true, "title": "Buy milk", "time": null, "type": "reminder", "message": "Sure thing. At what time should I set this reminder for you?", "requires_user_input": true, "reason": "missing_time"}}"""
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
+                {"role": "user", "content": f"User Input: {text}"}
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"}
@@ -174,8 +172,13 @@ Output: {{"success": true, "title": "Call dad", "time": null, "type": "reminder"
         import json
         result = json.loads(chat_completion.choices[0].message.content)
         
+        # Double check success if we have a title
+        success = result.get("success", False)
+        if not success and result.get("title"):
+            success = True
+
         return {
-            "success": result.get("success", False),
+            "success": success,
             "title": result.get("title"),
             "time": result.get("time"),
             "type": result.get("type", "task"),
@@ -188,10 +191,11 @@ Output: {{"success": true, "title": "Call dad", "time": null, "type": "reminder"
         logger.error(f"Error processing voice command: {str(e)}")
         return {
             "success": False,
-            "message": "I didn't quite catch that. Could you repeat?",
+            "message": "I didn't quite catch that. Could you say it again?",
             "requires_user_input": True,
             "reason": "parsing_error"
         }
+
 
 
 

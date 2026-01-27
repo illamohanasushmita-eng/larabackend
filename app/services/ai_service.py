@@ -143,9 +143,21 @@ CORE MISSION:
 2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
 
 LIFECYCLE RULES:
-- If TIME is missing: Set status="incomplete", polish the grammar (e.g. "Remind me to call my mom."), and ask "At what time should I set this reminder?".
-- If TIME is present: Set status="ready", create a full combined sentence (e.g. "Remind me to call my mom at 6:00 PM."), and confirm "Got it. I'll remind you to <title> at <time> IST."
+- **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar (e.g., "Remind me to call my mom."), and ask "At what time should I set this reminder?".
+- **FOLLOW-UP INPUT** (Task + Time in same input): If the input contains BOTH a task description AND a time (e.g., "Remind me to meet my friends 5 PM"), set status="ready", create a complete sentence (e.g., "Remind me to meet my friends at 5:00 PM."), and confirm "Got it. I'll remind you to <title> at <time> IST."
+- **CRITICAL**: If the input looks like it already contains a task description followed by a time expression (e.g., "Remind me to meet my friends 5 PM", "Call mom at 6", "Meeting tomorrow 3 PM"), treat this as a COMPLETE task and set status="ready".
 - NEVER return empty strings for 'title' or 'corrected_sentence'.
+- Always preserve the original task intent when adding time information.
+
+EXAMPLES:
+Input: "Remind me to meet my friends"
+Output: {{"status": "incomplete", "title": "Meet My Friends", "corrected_sentence": "Remind me to meet my friends.", "time": null, "type": "reminder", "message": "At what time should I set this reminder?"}}
+
+Input: "Remind me to meet my friends 5 PM"
+Output: {{"status": "ready", "title": "Meet My Friends", "corrected_sentence": "Remind me to meet my friends at 5:00 PM.", "time": "2026-01-27T17:00:00", "type": "reminder", "message": "Got it. I'll remind you to meet your friends at 5:00 PM IST."}}
+
+Input: "Call mom at 6"
+Output: {{"status": "ready", "title": "Call Mom", "corrected_sentence": "Remind me to call my mom at 6:00 PM.", "time": "2026-01-27T18:00:00", "type": "reminder", "message": "Got it. I'll remind you to call your mom at 6:00 PM IST."}}
 
 Return ONLY a JSON object:
 {{
@@ -158,6 +170,8 @@ Return ONLY a JSON object:
 }}"""
 
     try:
+        logger.info(f"🎤 [AI Input] Processing: '{text}'")
+        
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -169,12 +183,18 @@ Return ONLY a JSON object:
         
         import json
         result = json.loads(chat_completion.choices[0].message.content)
-        logger.info(f"AI Response: {result}")
+        logger.info(f"🤖 [AI Output] Status: {result.get('status')}, Title: {result.get('title')}, Sentence: {result.get('corrected_sentence')}, Time: {result.get('time')}")
         
         # Production Safety: Cast values and handle defaults
         status = str(result.get("status", "incomplete"))
         title = str(result.get("title", "New Task")).strip() or "New Task"
         corrected = str(result.get("corrected_sentence", text)).strip() or text
+        
+        # 🛡️ SAFETY CHECK: If status is "ready" but no time was extracted, force incomplete
+        if status == "ready" and not result.get("time"):
+            logger.warning(f"⚠️ AI returned 'ready' but no time found. Forcing incomplete state.")
+            status = "incomplete"
+            result["message"] = "At what time should I set this reminder?"
         
         return {
             "status": status,
@@ -186,7 +206,7 @@ Return ONLY a JSON object:
             "is_cancelled": False
         }
     except Exception as e:
-        logger.error(f"AI Parsing Error: {str(e)}")
+        logger.error(f"❌ AI Parsing Error: {str(e)}")
         return {
             "status": "error",
             "title": "Parsing Error",

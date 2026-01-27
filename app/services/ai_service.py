@@ -121,48 +121,41 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) ->
 
 async def process_voice_command(text: str, current_time: str = None) -> dict:
     """
-    Processes voice input with conversational intelligence.
-    Returns grammar-enhanced text and structured task details.
+    Assistant Lifecycle Processing:
+    idle -> incomplete -> ready
     """
     client = get_groq_client()
     if not client:
         return {
-            "success": False,
+            "status": "error",
+            "title": "Error",
             "corrected_sentence": text,
-            "message": "I'm having trouble connecting to my brain. Please check the API configuration.",
-            "requires_user_input": False,
-            "reason": "service_unavailable"
+            "message": "Service unavailable.",
+            "is_cancelled": False
         }
 
-    system_prompt = f"""You are LARA, a smart AI Personal Assistant.
+    # Strict multi-stage prompt for Grammar & Intent
+    system_prompt = f"""You are LARA, a professional AI Personal Assistant.
 Current Local Time: {current_time if current_time else 'Unknown'}
 
-Follow these steps exactly for every user input:
+CORE MISSION:
+Convert raw user voice input into a polished, grammar-corrected sentence.
+LARA schedules tasks with a TITLE and a TIME.
 
-STEP 1: Sentence Formation
-- Rewrite the user's input into a perfect, natural English sentence. Extract this as 'corrected_sentence'. Keep the meaning identical.
-
-STEP 2: Detect Intent
-- Determine if the user wants to add a task, set a reminder, or just talk.
-
-STEP 3: Extraction
-- Extract 'title' and 'time' (as ISO 8601 string).
-- If 'time' is missing but they want a reminder/task, set 'requires_user_input' to true.
-
-STEP 4: Response
-- If missing time, 'message' should be: "Sure. At what time should I set this reminder (IST)?"
-- If complete, 'message' should be: "Got it. I'll remind you to <title> at <time> IST."
+LIFECYCLE RULES:
+1. INITIAL ENHANCEMENT: If the user provides a task but no time (e.g., "call mom"), polish the grammar (e.g., "Remind me to call my mom.") and set status to "incomplete".
+2. FINAL ENHANCEMENT: If the input contains BOTH task and time (e.g., "call mom 6pm"), combine them into a perfect sentence (e.g., "Remind me to call my mom at 6:00 PM.") and set status to "ready".
+3. TIME GATHERING: If status is "incomplete", LARA MUST ask: "At what time should I remind you?"
+4. CONFIRMATION: If status is "ready", LARA confirms: "Got it. I'll remind you to <title> at <time> IST."
 
 Return ONLY a JSON object:
 {{
-  "success": boolean,
-  "title": string or null,
-  "corrected_sentence": string,
+  "status": "ready" | "incomplete" | "idle",
+  "title": string (Propcase short title),
+  "corrected_sentence": string (The polished grammar-enhanced sentence),
   "time": string (ISO 8601) or null,
   "type": "task" or "reminder",
-  "message": string,
-  "requires_user_input": boolean,
-  "reason": "missing_time" | "complete" | "irrelevant"
+  "message": string (Assistant's spoken response)
 }}"""
 
     try:
@@ -178,31 +171,26 @@ Return ONLY a JSON object:
         import json
         result = json.loads(chat_completion.choices[0].message.content)
         
-        # 🛡️ PRODUCTION SAFETY: Guarantee non-nullable str for 'type'
-        # Prevent 'ResponseValidationError: Input should be a valid string'
-        raw_type = result.get("type", "task")
-        final_type = str(raw_type) if raw_type is not None else "task"
-
+        # Ensure production safety: no Nulls for required fields
         return {
-            "success": result.get("success", True),
-            "title": result.get("title"),
+            "status": result.get("status", "incomplete"),
+            "title": result.get("title", "New Task"),
             "corrected_sentence": result.get("corrected_sentence", text),
             "time": result.get("time"),
-            "type": final_type,
+            "type": result.get("type", "task"),
             "message": result.get("message", "Processing..."),
-            "requires_user_input": result.get("requires_user_input", False),
-            "reason": result.get("reason"),
             "is_cancelled": False
         }
     except Exception as e:
-        logger.error(f"Error processing voice command: {str(e)}")
+        logger.error(f"Error: {str(e)}")
         return {
-            "success": False,
+            "status": "error",
+            "title": "Error",
             "corrected_sentence": text,
-            "message": f"I encountered an error: {str(e)}",
-            "requires_user_input": True,
-            "reason": "parsing_error"
+            "message": "I encountered an error processing that.",
+            "is_cancelled": False
         }
+
 
 
 

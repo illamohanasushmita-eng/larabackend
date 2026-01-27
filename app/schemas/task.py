@@ -70,15 +70,14 @@ class VoiceProcessRequest(BaseModel):
     current_time: Optional[str] = None
 
 class VoiceProcessResponse(BaseModel):
-    success: bool
-    title: Optional[str] = None
-    corrected_sentence: str # For the preview text box
+    status: str # "idle", "incomplete", "ready", "error"
+    title: str = "New Task"
+    corrected_sentence: str
     time: Optional[str] = None
     type: str = "task"
-    message: str # The assistant's spoken response
-    requires_user_input: bool = False
-    reason: Optional[str] = None
+    message: str
     is_cancelled: bool = False
+
 
 
 

@@ -122,33 +122,50 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) ->
 async def process_voice_command(text: str, current_time: str = None) -> dict:
     """
     Processes voice input to extract task details and generate an assistant response.
-    Returns data matching VoiceProcessResponse schema.
+    Specifically focuses on ensuring a time is always provided, asking if missing.
     """
     client = get_groq_client()
     if not client:
         return {
-            "title": text,
-            "type": "task",
-            "response_text": "I'm sorry, I cannot process your request right now.",
-            "is_complete": False
+            "success": False,
+            "message": "I'm sorry, I cannot process your request right now.",
+            "requires_user_input": False,
+            "reason": "service_unavailable"
         }
 
-    system_prompt = """You are a smart AI Personal Assistant. Extract task details from the user's voice input.
-Return ONLY a JSON object with the following fields:
-- title: The task title (natural English)
-- time: The time mentioned (e.g., "6 PM") or null
-- type: "task" or "reminder"
-- response_text: A polite confirmation or question if time is missing
-- is_complete: true if both title and time (if needed for a reminder) are present, false otherwise.
+    # Strict prompt for Time-First Assistant logic
+    system_prompt = f"""You are LARA, a dedicated AI Personal Assistant.
+Current Local Time: {current_time if current_time else 'Unknown'}
 
-Example Input: "remind me to buy milk at 6pm"
-Example Output: {"title": "Buy milk", "time": "6:00 PM", "type": "reminder", "response_text": "Got it. I will remind you to buy milk at 6 PM IST.", "is_complete": true}"""
+Your goal is to parse user input into a task/reminder with a TITLE and a TIME.
+A TIME is mandatory for LARA to schedule anything.
+
+EXTRACT RULES:
+1. TITLE: Every request needs a title. If the user only says a time (e.g. "at 5 PM"), use "Pending Task" as the title.
+2. TIME: If a specific time is mentioned, extract it as an ISO 8601 string.
+3. MISSING TIME: If the user provides a task but NO time, you MUST set 'requires_user_input' to true and ask: "Sure. At what time should I set this reminder (IST)?"
+4. COMPLETE: If both are present, confirm clearly: "Got it. I will remind you to <title> at <time> IST."
+
+Return ONLY a JSON object:
+{{
+  "success": true,
+  "title": string,
+  "time": string (ISO 8601) or null,
+  "type": "task" or "reminder",
+  "message": string (Spoken response),
+  "requires_user_input": boolean,
+  "reason": "missing_time" | "complete"
+}}
+
+Example:
+Input: "Remind me to call dad"
+Output: {{"success": true, "title": "Call dad", "time": null, "type": "reminder", "message": "Sure. At what time should I set this reminder (IST)?", "requires_user_input": true, "reason": "missing_time"}}"""
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Current Time: {current_time}\nUser Input: {text}"}
+                {"role": "user", "content": text}
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"}
@@ -157,24 +174,26 @@ Example Output: {"title": "Buy milk", "time": "6:00 PM", "type": "reminder", "re
         import json
         result = json.loads(chat_completion.choices[0].message.content)
         
-        # Ensure fallback for fields
         return {
-            "title": result.get("title", text),
+            "success": result.get("success", False),
+            "title": result.get("title"),
             "time": result.get("time"),
             "type": result.get("type", "task"),
-            "response_text": result.get("response_text", "Done!"),
-            "is_complete": result.get("is_complete", False),
+            "message": result.get("message", "I've noted that."),
+            "requires_user_input": result.get("requires_user_input", False),
+            "reason": result.get("reason"),
             "is_cancelled": False
         }
     except Exception as e:
         logger.error(f"Error processing voice command: {str(e)}")
-        # Simple fallback
         return {
-            "title": text,
-            "type": "task",
-            "response_text": f"I've noted that down: {text}",
-            "is_complete": True,
-            "is_cancelled": False
+            "success": False,
+            "message": "I didn't quite catch that. Could you repeat?",
+            "requires_user_input": True,
+            "reason": "parsing_error"
         }
+
+
+
 
 

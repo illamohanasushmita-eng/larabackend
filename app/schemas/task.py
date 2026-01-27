@@ -70,10 +70,13 @@ class VoiceProcessRequest(BaseModel):
     current_time: Optional[str] = None
 
 class VoiceProcessResponse(BaseModel):
-    title: str
+    success: bool
+    title: Optional[str] = None
     time: Optional[str] = None
-    type: str
-    response_text: str
-    is_complete: bool
+    type: str = "task"
+    message: str # Former response_text
+    requires_user_input: bool = False
+    reason: Optional[str] = None # e.g. "missing_time", "missing_title", "ambiguous"
     is_cancelled: bool = False
+
 

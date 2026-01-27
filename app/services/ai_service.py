@@ -128,7 +128,7 @@ async def process_voice_command(text: str, current_time: str = None) -> dict:
     if not client:
         return {
             "status": "error",
-            "title": "Error",
+            "title": "Service Error",
             "corrected_sentence": text,
             "message": "Service unavailable.",
             "is_cancelled": False
@@ -139,30 +139,29 @@ async def process_voice_command(text: str, current_time: str = None) -> dict:
 Current Local Time: {current_time if current_time else 'Unknown'}
 
 CORE MISSION:
-Convert raw user voice input into a polished, grammar-corrected sentence.
-LARA schedules tasks with a TITLE and a TIME.
+1. GRAMMAR ENHANCEMENT: Convert the user's raw voice input into a polished, perfect English sentence.
+2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
 
 LIFECYCLE RULES:
-1. INITIAL ENHANCEMENT: If the user provides a task but no time (e.g., "call mom"), polish the grammar (e.g., "Remind me to call my mom.") and set status to "incomplete".
-2. FINAL ENHANCEMENT: If the input contains BOTH task and time (e.g., "call mom 6pm"), combine them into a perfect sentence (e.g., "Remind me to call my mom at 6:00 PM.") and set status to "ready".
-3. TIME GATHERING: If status is "incomplete", LARA MUST ask: "At what time should I remind you?"
-4. CONFIRMATION: If status is "ready", LARA confirms: "Got it. I'll remind you to <title> at <time> IST."
+- If TIME is missing: Set status="incomplete", polish the grammar (e.g. "Remind me to call my mom."), and ask "At what time should I set this reminder?".
+- If TIME is present: Set status="ready", create a full combined sentence (e.g. "Remind me to call my mom at 6:00 PM."), and confirm "Got it. I'll remind you to <title> at <time> IST."
+- NEVER return empty strings for 'title' or 'corrected_sentence'.
 
 Return ONLY a JSON object:
 {{
-  "status": "ready" | "incomplete" | "idle",
-  "title": string (Propcase short title),
-  "corrected_sentence": string (The polished grammar-enhanced sentence),
-  "time": string (ISO 8601) or null,
+  "status": "ready" | "incomplete",
+  "title": "Propcase Short Title",
+  "corrected_sentence": "Full polished sentence including time if present",
+  "time": "ISO 8601 string or null",
   "type": "task" or "reminder",
-  "message": string (Assistant's spoken response)
+  "message": "Spoken assistant response"
 }}"""
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text}
+                {"role": "user", "content": f"Input: {text}"}
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"}
@@ -170,26 +169,32 @@ Return ONLY a JSON object:
         
         import json
         result = json.loads(chat_completion.choices[0].message.content)
+        logger.info(f"AI Response: {result}")
         
-        # Ensure production safety: no Nulls for required fields
+        # Production Safety: Cast values and handle defaults
+        status = str(result.get("status", "incomplete"))
+        title = str(result.get("title", "New Task")).strip() or "New Task"
+        corrected = str(result.get("corrected_sentence", text)).strip() or text
+        
         return {
-            "status": result.get("status", "incomplete"),
-            "title": result.get("title", "New Task"),
-            "corrected_sentence": result.get("corrected_sentence", text),
+            "status": status,
+            "title": title,
+            "corrected_sentence": corrected,
             "time": result.get("time"),
-            "type": result.get("type", "task"),
-            "message": result.get("message", "Processing..."),
+            "type": str(result.get("type", "task")),
+            "message": str(result.get("message", "Processing...")),
             "is_cancelled": False
         }
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
+        logger.error(f"AI Parsing Error: {str(e)}")
         return {
             "status": "error",
-            "title": "Error",
+            "title": "Parsing Error",
             "corrected_sentence": text,
-            "message": "I encountered an error processing that.",
+            "message": "I had trouble processing that. Can you repeat it?",
             "is_cancelled": False
         }
+
 
 
 

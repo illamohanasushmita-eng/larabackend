@@ -119,3 +119,62 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) ->
         logger.error(f"Error generating AI summary: {str(e)}")
         return "You have some tasks scheduled for today. Have a productive day!" if summary_type == "MORNING" else "Hope you had a productive day!"
 
+async def process_voice_command(text: str, current_time: str = None) -> dict:
+    """
+    Processes voice input to extract task details and generate an assistant response.
+    Returns data matching VoiceProcessResponse schema.
+    """
+    client = get_groq_client()
+    if not client:
+        return {
+            "title": text,
+            "type": "task",
+            "response_text": "I'm sorry, I cannot process your request right now.",
+            "is_complete": False
+        }
+
+    system_prompt = """You are a smart AI Personal Assistant. Extract task details from the user's voice input.
+Return ONLY a JSON object with the following fields:
+- title: The task title (natural English)
+- time: The time mentioned (e.g., "6 PM") or null
+- type: "task" or "reminder"
+- response_text: A polite confirmation or question if time is missing
+- is_complete: true if both title and time (if needed for a reminder) are present, false otherwise.
+
+Example Input: "remind me to buy milk at 6pm"
+Example Output: {"title": "Buy milk", "time": "6:00 PM", "type": "reminder", "response_text": "Got it. I will remind you to buy milk at 6 PM IST.", "is_complete": true}"""
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Current Time: {current_time}\nUser Input: {text}"}
+            ],
+            model="llama-3.1-8b-instant",
+            response_format={"type": "json_object"}
+        )
+        
+        import json
+        result = json.loads(chat_completion.choices[0].message.content)
+        
+        # Ensure fallback for fields
+        return {
+            "title": result.get("title", text),
+            "time": result.get("time"),
+            "type": result.get("type", "task"),
+            "response_text": result.get("response_text", "Done!"),
+            "is_complete": result.get("is_complete", False),
+            "is_cancelled": False
+        }
+    except Exception as e:
+        logger.error(f"Error processing voice command: {str(e)}")
+        # Simple fallback
+        return {
+            "title": text,
+            "type": "task",
+            "response_text": f"I've noted that down: {text}",
+            "is_complete": True,
+            "is_cancelled": False
+        }
+
+

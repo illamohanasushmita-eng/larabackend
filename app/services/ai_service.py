@@ -121,49 +121,55 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) ->
 
 async def process_voice_command(text: str, current_time: str = None) -> dict:
     """
-    Processes voice input to extract task details and generate an assistant response.
-    Specifically focuses on ensuring a time is always provided, asking if missing.
+    Processes voice input with conversational intelligence.
+    Returns grammar-enhanced text and structured task details.
     """
     client = get_groq_client()
     if not client:
-        logger.error("Groq client not initialized. Check GROQ_API_KEY.")
         return {
             "success": False,
-            "message": "AI connection is not configured. Please add the GROQ_API_KEY to environment variables.",
+            "corrected_sentence": text,
+            "message": "I'm having trouble connecting to my brain. Please check the API configuration.",
             "requires_user_input": False,
-            "reason": "missing_api_key"
+            "reason": "service_unavailable"
         }
 
-    # Strict prompt for Conversational Assistant logic
-    system_prompt = f"""You are LARA, a talented AI Personal Assistant.
+    system_prompt = f"""You are LARA, a smart AI Personal Assistant.
 Current Local Time: {current_time if current_time else 'Unknown'}
 
-RULES:
-1. If the user mentions a task/reminder, set 'success' to true.
-2. If the TITLE is found but TIME is missing, set 'requires_user_input' to true and 'reason' to 'missing_time'.
-3. If the user provides ONLY a time (e.g. "at 5 PM"), it's likely a follow-up. Set 'title' to "Pending Task", 'success' to true, and 'requires_user_input' to false.
-4. If the input is completely irrelevant or silent, set 'success' to false.
-5. Provide a clear, polite, and helpful 'message' that sounds natural when spoken.
+Follow these steps exactly for every user input:
+
+STEP 1: Sentence Formation
+- Rewrite the user's input into a perfect, natural English sentence. Extract this as 'corrected_sentence'. Keep the meaning identical.
+
+STEP 2: Detect Intent
+- Determine if the user wants to add a task, set a reminder, or just talk.
+
+STEP 3: Extraction
+- Extract 'title' and 'time' (as ISO 8601 string).
+- If 'time' is missing but they want a reminder/task, set 'requires_user_input' to true.
+
+STEP 4: Response
+- If missing time, 'message' should be: "Sure. At what time should I set this reminder (IST)?"
+- If complete, 'message' should be: "Got it. I'll remind you to <title> at <time> IST."
 
 Return ONLY a JSON object:
 {{
   "success": boolean,
   "title": string or null,
+  "corrected_sentence": string,
   "time": string (ISO 8601) or null,
   "type": "task" or "reminder",
   "message": string,
   "requires_user_input": boolean,
   "reason": "missing_time" | "complete" | "irrelevant"
-}}
-
-Example: "Remind me to buy milk" 
-Output: {{"success": true, "title": "Buy milk", "time": null, "type": "reminder", "message": "Sure thing. At what time should I set this reminder for you?", "requires_user_input": true, "reason": "missing_time"}}"""
+}}"""
 
     try:
         chat_completion = client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"User Input: {text}"}
+                {"role": "user", "content": text}
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"}
@@ -172,17 +178,18 @@ Output: {{"success": true, "title": "Buy milk", "time": null, "type": "reminder"
         import json
         result = json.loads(chat_completion.choices[0].message.content)
         
-        # Double check success if we have a title
-        success = result.get("success", False)
-        if not success and result.get("title"):
-            success = True
+        # 🛡️ PRODUCTION SAFETY: Guarantee non-nullable str for 'type'
+        # Prevent 'ResponseValidationError: Input should be a valid string'
+        raw_type = result.get("type", "task")
+        final_type = str(raw_type) if raw_type is not None else "task"
 
         return {
-            "success": success,
+            "success": result.get("success", True),
             "title": result.get("title"),
+            "corrected_sentence": result.get("corrected_sentence", text),
             "time": result.get("time"),
-            "type": result.get("type", "task"),
-            "message": result.get("message", "I've noted that."),
+            "type": final_type,
+            "message": result.get("message", "Processing..."),
             "requires_user_input": result.get("requires_user_input", False),
             "reason": result.get("reason"),
             "is_cancelled": False
@@ -191,10 +198,12 @@ Output: {{"success": true, "title": "Buy milk", "time": null, "type": "reminder"
         logger.error(f"Error processing voice command: {str(e)}")
         return {
             "success": False,
-            "message": "I didn't quite catch that. Could you say it again?",
+            "corrected_sentence": text,
+            "message": f"I encountered an error: {str(e)}",
             "requires_user_input": True,
             "reason": "parsing_error"
         }
+
 
 
 

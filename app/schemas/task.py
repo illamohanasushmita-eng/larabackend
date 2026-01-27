@@ -72,11 +72,13 @@ class VoiceProcessRequest(BaseModel):
 class VoiceProcessResponse(BaseModel):
     success: bool
     title: Optional[str] = None
+    corrected_sentence: str # For the preview text box
     time: Optional[str] = None
     type: str = "task"
-    message: str # Former response_text
+    message: str # The assistant's spoken response
     requires_user_input: bool = False
-    reason: Optional[str] = None # e.g. "missing_time", "missing_title", "ambiguous"
+    reason: Optional[str] = None
     is_cancelled: bool = False
+
 
 

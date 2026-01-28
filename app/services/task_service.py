@@ -143,25 +143,27 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     query_start = dt_utc_start - buffer
     query_end = dt_utc_end + buffer
     
+    from sqlalchemy import or_, and_
     query = select(Task).filter(
         Task.user_id == user_id,
-        Task.due_date >= query_start,
-        Task.due_date <= query_end
+        or_(
+            and_(Task.due_date >= query_start, Task.due_date <= query_end),
+            and_(Task.due_date < dt_utc_start, Task.status == "pending")
+        )
     ).order_by(Task.due_date)
     
     result = await db.execute(query)
     all_potential_tasks = result.scalars().all()
     
     # Strict Python Filter for "Today" in IST
-    tasks = []
-    logger.info(f"📊 [get_daily_plan] Filtering {len(all_potential_tasks)} candidates for {target_date}")
+    today_tasks = []
+    overdue_tasks = []
     
     for t in all_potential_tasks:
         if not t.due_date:
             continue
             
         # Convert DB time to IST
-        # Handle naive as UTC
         t_utc = t.due_date
         if t_utc.tzinfo is None:
             t_utc = t_utc.replace(tzinfo=timezone.utc)
@@ -169,10 +171,13 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         t_ist = t_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
         
         if t_ist.date() == target_date:
-            tasks.append(t)
-        else:
-            # logger.info(f"   Skipping {t.title} at {t_ist} (Date mismatch)")
-            pass
+            today_tasks.append(t)
+        elif t_ist.date() < target_date and t.status == "pending":
+            overdue_tasks.append(t)
+
+    # Combined tasks for summary calculation
+    tasks = today_tasks # We'll still call the today ones 'tasks' for legacy reasons in the response
+    overdue_count = len(overdue_tasks)
             
     # Include unscheduled tasks if any (though usually they have no date, handled separately?)
     # If due_date is None, our SQL filter ^ skips them unless we allow None
@@ -207,11 +212,12 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         }
     
     sections_map = {
+        "Overdue": overdue_tasks,
         "Morning": [],
-    "Afternoon": [],
-    "Evening": [],
-    "Night": [],
-    "Unscheduled": []
+        "Afternoon": [],
+        "Evening": [],
+        "Night": [],
+        "Unscheduled": []
     }
     
     time_bound_count = 0
@@ -245,10 +251,14 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     sections = [{"slot": k, "items": v} for k, v in sections_map.items() if len(v) > 0]
     
     count = len(tasks)
+    overdue_msg = f" Also, you have {overdue_count} pending tasks from before." if overdue_count > 0 else ""
+    
     if count == 1:
-        msg = f"{greeting_time}! You have 1 task today. Let's make it count!"
+        msg = f"{greeting_time}! You have 1 task today.{overdue_msg} Let's make it count!"
     elif count > 1:
-        msg = f"{greeting_time}! You have {count} tasks scheduled. {time_bound_count} are time-sensitive."
+        msg = f"{greeting_time}! You have {count} tasks scheduled today.{overdue_msg} {time_bound_count} are time-sensitive."
+    elif overdue_count > 0:
+        msg = f"{greeting_time}! Nothing new for today, but you have {overdue_count} tasks carried over from before."
     else:
         msg = f"{greeting_time}! Nothing scheduled for today, but you have {len(upcoming_tasks)} upcoming tasks."
 

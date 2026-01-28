@@ -149,6 +149,7 @@ CORE MISSION:
    - **DIRECT ACTION**: Prefer direct action (e.g., "Call your boss") or factual stance (e.g., "You have a meeting").
    - DO NOT respond as if you are the user. You are the Assistant observing and documenting for the user.
 2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
+   - **FUTURE TIME ONLY**: Your extracted time MUST always be in the future relative to the Current Local Time. If the user specifies a time that has already passed today (e.g., user says "7:00" but it's currently 8:00 PM), automatically move the date to tomorrow.
 
 LIFECYCLE RULES:
 - **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar into a direct 2nd person action (e.g., "Call your mom."), and ask "At what time should I set this for you?".
@@ -156,15 +157,12 @@ LIFECYCLE RULES:
 - **CRITICAL**: If the input contains a task and a time, treat as COMPLETE (status="ready").
 - NEVER return empty strings for 'title' or 'corrected_sentence'.
 
-EXAMPLES:
+EXAMPLES (Assuming Current Time: 2026-01-27T20:00:00):
+Input: "i meeting at 7"
+Output: {{"status": "ready", "title": "Meeting", "corrected_sentence": "You have a meeting tomorrow at 7:00 PM.", "time": "2026-01-28T19:00:00", "type": "task", "message": "Got it. I've noted that you have a meeting tomorrow at 7:00 PM IST."}}
+
 Input: "remind me I call mom"
 Output: {{"status": "incomplete", "title": "Call Your Mom", "corrected_sentence": "Call your mom.", "time": null, "type": "reminder", "message": "At what time should I set this for you?"}}
-
-Input: "i meeting at 7"
-Output: {{"status": "ready", "title": "Meeting", "corrected_sentence": "You have a meeting at 7:00 PM.", "time": "2026-01-27T19:00:00", "type": "task", "message": "Got it. I've noted that you have a meeting at 7:00 PM IST."}}
-
-Input: "call my boss tomorrow"
-Output: {{"status": "ready", "title": "Call Your Boss", "corrected_sentence": "Call your boss tomorrow.", "time": "2026-01-28T09:00:00", "type": "task", "message": "Got it. I've scheduled calling your boss for tomorrow."}}
 
 Return ONLY a JSON object:
 {{

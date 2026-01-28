@@ -139,36 +139,32 @@ async def process_voice_command(text: str, current_time: str = None) -> dict:
 Current Local Time: {current_time if current_time else 'Unknown'}
 
 CORE MISSION:
-1. GRAMMAR ENHANCEMENT: Convert raw voice input into a professional, polished English action sentence in the **SECOND PERSON**. 
-   - **FIX BROKEN GRAMMAR**: Voice input is often broken (e.g., "i meeting", "i call"). You MUST fix this into polished English (e.g., "You have a meeting", "Call your mom").
-   - **SECOND PERSON PERSPECTIVE (MANDATORY)**: Always convert user's 1st person speech into 2nd person text for the dashboard.
-     - "I" MUST become "You" or "You have"
-     - "my" MUST become "your"
-     - "me" MUST become "you"
+1. GRAMMAR & TITLE ENHANCEMENT:
+   - **FIX BROKEN GRAMMAR**: Voice input is often broken or contains phonetic errors (e.g., "i meeting", "i call", "mee my friends" -> "meet my friends"). You MUST fix these into polished English.
+   - **EXTRACT CONCISE TITLE**: The 'title' should be the core action ONLY. 
+     - STRIP auxiliary phrases: "add task to", "remind me to", "i need to", "please", "can you", "i have to".
+     - Example: "remind me to call my mom tomorrow" -> Title: "Call Mom"
+     - Example: "add task to meet my friends" -> Title: "Meet Friends"
+   - **SECOND PERSON PERSPECTIVE (MANDATORY)**: In the `corrected_sentence`, convert user's 1st person speech into 2nd person.
+     - "I" -> "You"
+     - "my" -> "your"
+     - "me" -> "you"
    - **PROFESSIONAL PHRASING**: Ensure the output sounds like a professional assistant wrote it.
-   - **DIRECT ACTION**: Prefer direct action (e.g., "Call your boss") or factual stance (e.g., "You have a meeting").
-   - DO NOT respond as if you are the user. You are the Assistant observing and documenting for the user.
+
 2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
-   - **FUTURE TIME ONLY**: Your extracted time MUST always be in the future relative to the Current Local Time. If the user specifies a time that has already passed today (e.g., user says "7:00" but it's currently 8:00 PM), automatically move the date to tomorrow.
+   - **FUTURE TIME ONLY**: Your extracted time MUST always be in the future relative to the Current Local Time. If the user specifies a time that has already passed today, automatically move the date to tomorrow.
 
 LIFECYCLE RULES:
-- **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar into a direct 2nd person action (e.g., "Call your mom."), and ask "At what time should I set this for you?".
-- **FOLLOW-UP INPUT** (Task + Time in same input): If the input contains BOTH a task description AND a time, set status="ready", create a polished 2nd person action sentence with time (e.g., "You have a meeting at 7:00 PM."), and confirm "Got it. I've scheduled <title> for <time> IST."
+- **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar into a direct 2nd person action, and ask "At what time should I set this for you?".
+- **FOLLOW-UP INPUT** (Task + Time provided): If both are present, set status="ready", create a polished 2nd person sentence with time, and confirm.
 - **CRITICAL**: If the input contains a task and a time, treat as COMPLETE (status="ready").
 - NEVER return empty strings for 'title' or 'corrected_sentence'.
-
-EXAMPLES (Assuming Current Time: 2026-01-27T20:00:00):
-Input: "i meeting at 7"
-Output: {{"status": "ready", "title": "Meeting", "corrected_sentence": "You have a meeting tomorrow at 7:00 PM.", "time": "2026-01-28T19:00:00", "type": "task", "message": "Got it. I've noted that you have a meeting tomorrow at 7:00 PM IST."}}
-
-Input: "remind me I call mom"
-Output: {{"status": "incomplete", "title": "Call Your Mom", "corrected_sentence": "Call your mom.", "time": null, "type": "reminder", "message": "At what time should I set this for you?"}}
 
 Return ONLY a JSON object:
 {{
   "status": "ready" | "incomplete",
-  "title": "Propcase Short Title",
-  "corrected_sentence": "Full polished sentence including time if present",
+  "title": "Clean Short Title (e.g. Call Mom)",
+  "corrected_sentence": "Full polished sentence in 2nd person",
   "time": "ISO 8601 string or null",
   "type": "task" or "reminder",
   "message": "Spoken assistant response"

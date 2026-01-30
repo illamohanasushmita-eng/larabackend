@@ -2,3 +2,4 @@ firebase-service-account.json
 __pycache__/
 *.pyc
 .env
+client_secre

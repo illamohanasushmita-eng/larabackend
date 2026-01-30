@@ -26,10 +26,15 @@ async def sync_google_calendar(
             "email": current_user.email
         }
     except Exception as e:
-        print(f"❌ Google Sync Error: {str(e)}")
+        error_msg = str(e)
+        print(f"❌ [Detailed] Google Sync Error: {error_msg}")
+        # Log more detail if it's a google-auth error
+        if hasattr(e, 'response'):
+            print(f"❌ Response body: {e.response.text}")
+        
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to sync with Google: {str(e)}"
+            detail=f"Google Auth Error: {error_msg}"
         )
 
 @router.get("/google/status", response_model=GoogleSyncStatus)

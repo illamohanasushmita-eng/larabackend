@@ -202,9 +202,10 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
             if not start: continue
             
-            # Convert ISO start to datetime
-            from dateutil import parser
-            dt_utc = parser.isoparse(start)
+            # Convert ISO start to datetime (Support for 'Z' suffix)
+            start_iso = start.replace('Z', '+00:00')
+            from datetime import datetime
+            dt_utc = datetime.fromisoformat(start_iso)
             if dt_utc.tzinfo is None:
                  dt_utc = dt_utc.replace(tzinfo=timezone.utc)
             

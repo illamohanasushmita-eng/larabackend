@@ -26,7 +26,7 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
     flow = Flow.from_client_config(
         client_config,
         scopes=['https://www.googleapis.com/auth/calendar.events'],
-        redirect_uri='postmessage'
+        redirect_uri='https://web-production-6ff602.up.railway.app/api/v1/calendar/google/sync'
     )
 
     # Exchange code

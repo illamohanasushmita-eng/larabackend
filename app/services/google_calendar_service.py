@@ -13,11 +13,20 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
     """
     Exchange authorization code for access and refresh tokens.
     """
-    # Use the client_secret.json to initialize the flow
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRET_FILE,
+    # Use config from env instead of file to avoid project mismatches
+    client_config = {
+        "web": {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+
+    flow = Flow.from_client_config(
+        client_config,
         scopes=['https://www.googleapis.com/auth/calendar.events'],
-        redirect_uri='postmessage'  # Requirement for mobile/offline access
+        redirect_uri='postmessage'
     )
 
     # Exchange code

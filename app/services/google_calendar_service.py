@@ -49,10 +49,46 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
     
     return user
 
-async def get_calendar_events(user: User):
+async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None, time_max: str = None):
     """
-    Fetch upcoming events from Google Calendar.
+    Fetch events from Google Calendar for the given time range.
     """
-    # This is a placeholder for the sync logic
-    # In a real app, you would handle token refreshing here
-    pass
+    if not user.google_refresh_token:
+        return []
+
+    import google.oauth2.credentials
+    creds = google.oauth2.credentials.Credentials(
+        token=user.google_access_token,
+        refresh_token=user.google_refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET,
+        scopes=['https://www.googleapis.com/auth/calendar.events']
+    )
+
+    try:
+        service = build('calendar', 'v3', credentials=creds)
+        
+        # Use provided range or default to now -> 24h
+        if not time_min:
+            time_min = datetime.datetime.utcnow().isoformat() + 'Z'
+        if not time_max:
+            time_max = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
+
+        print(f"📅 Fetching Google events from {time_min} to {time_max}")
+
+        events_result = service.events().list(
+            calendarId='primary', 
+            timeMin=time_min,
+            timeMax=time_max,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        print(f"✅ Found {len(events)} Google events.")
+        return events
+        
+    except Exception as e:
+        print(f"❌ Failed to fetch Google events: {e}")
+        return []

@@ -46,3 +46,16 @@ async def get_google_sync_status(current_user: User = Depends(get_current_user))
         "is_synced": bool(current_user.google_refresh_token),
         "email": current_user.email if current_user.google_refresh_token else None
     }
+
+@router.get("/google/events")
+async def list_google_events(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Test endpoint to list upcoming events from Google.
+    """
+    now = datetime.datetime.utcnow().isoformat() + 'Z'
+    tomorrow = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
+    events = await google_calendar_service.get_calendar_events(current_user, db, time_min=now, time_max=tomorrow)
+    return {"events": events}

@@ -188,6 +188,45 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     
     # Sort today's tasks
     tasks.sort(key=lambda x: x.due_date)
+
+    # 🚀 NEW: Merge Google Calendar Events for today
+    try:
+        from app.services import google_calendar_service
+        # Pass the strict UTC window to fetch everything for this specific day
+        google_events = await google_calendar_service.get_calendar_events(
+            user, db, 
+            time_min=dt_utc_start.isoformat().replace('+00:00', 'Z'),
+            time_max=dt_utc_end.isoformat().replace('+00:00', 'Z')
+        )
+        for event in google_events:
+            start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
+            if not start: continue
+            
+            # Convert ISO start to datetime
+            from dateutil import parser
+            dt_utc = parser.isoparse(start)
+            if dt_utc.tzinfo is None:
+                 dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+            
+            # Check if event is actually for the target date in IST
+            dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+            if dt_ist.date() == target_date:
+                # Add to the pool as a virtual task
+                tasks.append(Task(
+                    id=0, # Virtual ID
+                    title=event.get('summary', 'Google Event'),
+                    description=event.get('description', ''),
+                    due_date=dt_utc,
+                    status="completed" if event.get('status') == 'confirmed' else 'pending',
+                    type="meeting",
+                    # Add a special flag for the UI
+                    raw_text="google_event" 
+                ))
+    except Exception as e:
+        logger.error(f"⚠️ Failed to merge Google events into plan: {e}")
+    
+    # Re-sort after merging
+    tasks.sort(key=lambda x: x.due_date or datetime.min.replace(tzinfo=timezone.utc))
     
     # 🚀 NEW: Fetch "Upcoming" tasks (next 5 tasks after today)
     upcoming_query = select(Task).filter(
@@ -199,7 +238,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     upcoming_res = await db.execute(upcoming_query)
     upcoming_tasks = upcoming_res.scalars().all()
     
-    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} tasks for today and {len(upcoming_tasks)} upcoming.")
+    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} items total (Tasks + Google) and {len(upcoming_tasks)} upcoming.")
     
     if not tasks and not upcoming_tasks:
         return {
@@ -229,11 +268,9 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         time_bound_count += 1
         
         # Convert DB time to IST for grouping
-        # No matter if it was stored as UTC or IST, .astimezone(tz_ist) yields the correct local hour
         tz_ist = timezone(timedelta(hours=5, minutes=30))
         t_due = t.due_date
         if t_due.tzinfo is None:
-            # Fallback for old/naive data: assume UTC and convert
             t_due = t_due.replace(tzinfo=timezone.utc)
             
         dt_ist = t_due.astimezone(tz_ist)

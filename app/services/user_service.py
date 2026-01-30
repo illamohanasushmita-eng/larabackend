@@ -30,3 +30,33 @@ async def update_user_profile(db: AsyncSession, user_id: int, user_update: dict)
         await db.commit()
         await db.refresh(db_user)
     return db_user
+
+async def handle_google_login(db: AsyncSession, email: str, full_name: str = None):
+    # Try to find user
+    user = await get_user_by_email(db, email)
+    if not user:
+        # Create new user for Google login
+        user = User(
+            email=email.lower().strip(),
+            full_name=full_name,
+            is_active=True
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+        
+        # Create welcome notification
+        try:
+            from app.models.notification import Notification
+            welcome_notif = Notification(
+                user_id=user.id,
+                title="Google Login Successful! 🚀",
+                body="Welcome to LARA. We've set up your account via Google.",
+                data={"type": "welcome"}
+            )
+            db.add(welcome_notif)
+            await db.commit()
+        except Exception as e:
+            print(f"⚠️ Failed to create welcome notification: {e}")
+            
+    return user

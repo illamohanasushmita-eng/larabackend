@@ -1,0 +1,6 @@
+Connecting to: ballast.proxy.rlwy.net:48465/railway
+Current schema: public
+
+Found 'users' tables in these schemas:
+ - public.users
+   Columns: ['id', 'full_name', 'email', 'hashed_password', 'is_active', 'dob', 'gender', 'profession', 'google_access_token', 'google_refresh_token', 'google_token_expiry']

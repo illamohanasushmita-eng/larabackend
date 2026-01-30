@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.schemas.user import UserCreate, UserResponse, UserLogin, Token, UserUpdate
+from app.schemas.user import UserCreate, UserResponse, UserLogin, Token, UserUpdate, GoogleLoginRequest
 from app.services import user_service
 from app.core import security
 from app.api.deps import get_current_user
@@ -40,6 +40,36 @@ async def register_user(user_in: UserCreate, db: AsyncSession = Depends(get_db))
         "access_token": access_token, 
         "token_type": "bearer",
         "onboarding_completed": False # Always false for new registration
+    }
+
+@router.post("/google-login", response_model=Token)
+async def google_login(
+    auth_data: GoogleLoginRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    # In a real app, we would verify the id_token with Google here
+    # For now, we trust the frontend's provided email as requested by user simplicity
+    user = await user_service.handle_google_login(
+        db, 
+        email=auth_data.email, 
+        full_name=auth_data.full_name
+    )
+    
+    # Store server_auth_code if provided for calendar sync
+    if auth_data.server_auth_code:
+        try:
+            from app.services import google_calendar_service
+            await google_calendar_service.exchange_code_for_tokens(db, user, auth_data.server_auth_code)
+        except Exception as e:
+            print(f"⚠️ Failed to exchange Google code during login: {e}")
+
+    access_token = security.create_access_token(user.id)
+    onboarding_done = bool(user.profession)
+    
+    return {
+        "access_token": access_token, 
+        "token_type": "bearer",
+        "onboarding_completed": onboarding_done
     }
 
 @router.post("/login", response_model=Token)

@@ -40,7 +40,8 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
 
     # Update user in database
     user.google_access_token = credentials.token
-    user.google_refresh_token = credentials.refresh_token
+    if credentials.refresh_token:
+        user.google_refresh_token = credentials.refresh_token
     user.google_token_expiry = credentials.expiry
 
     db.add(user)
@@ -51,12 +52,15 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
 
 async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None, time_max: str = None):
     """
-    Fetch events from Google Calendar for the given time range.
+    Fetch events from Google Calendar with automatic token refreshing.
     """
     if not user.google_refresh_token:
+        print("ℹ️ No Google refresh token found for user.")
         return []
 
     import google.oauth2.credentials
+    from google.auth.transport.requests import Request
+
     creds = google.oauth2.credentials.Credentials(
         token=user.google_access_token,
         refresh_token=user.google_refresh_token,
@@ -67,15 +71,29 @@ async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None
     )
 
     try:
+        # 🔄 Refresh token if expired
+        if creds.expired:
+            print("🔄 Google Access Token expired, refreshing...")
+            creds.refresh(Request())
+            
+            # Save the new tokens to the database
+            user.google_access_token = creds.token
+            if creds.refresh_token:
+                user.google_refresh_token = creds.refresh_token
+            user.google_token_expiry = creds.expiry
+            
+            db.add(user)
+            await db.commit()
+            print("✅ Tokens refreshed and saved successfully.")
+
         service = build('calendar', 'v3', credentials=creds)
         
-        # Use provided range or default to now -> 24h
         if not time_min:
             time_min = datetime.datetime.utcnow().isoformat() + 'Z'
         if not time_max:
             time_max = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
 
-        print(f"📅 Fetching Google events from {time_min} to {time_max}")
+        print(f"📅 Fetching events from {time_min} to {time_max}")
 
         events_result = service.events().list(
             calendarId='primary', 
@@ -86,9 +104,9 @@ async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None
         ).execute()
         
         events = events_result.get('items', [])
-        print(f"✅ Found {len(events)} Google events.")
+        print(f"✅ Google API returned {len(events)} events.")
         return events
         
     except Exception as e:
-        print(f"❌ Failed to fetch Google events: {e}")
+        print(f"❌ Google API Error in get_calendar_events: {e}")
         return []

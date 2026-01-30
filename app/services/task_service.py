@@ -202,32 +202,37 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
             if not start: continue
             
-            # Convert ISO start to datetime (Support for 'Z' suffix)
-            start_iso = start.replace('Z', '+00:00')
-            from datetime import datetime
-            dt_utc = datetime.fromisoformat(start_iso)
-            if dt_utc.tzinfo is None:
-                 dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-            
-            # Check if event is actually for the target date in IST
-            dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
-            if dt_ist.date() == target_date:
-                # Add to the pool as a virtual task
-                tasks.append(Task(
-                    id=0, # Virtual ID
-                    title=event.get('summary', 'Google Event'),
-                    description=event.get('description', ''),
-                    due_date=dt_utc,
-                    status="completed" if event.get('status') == 'confirmed' else 'pending',
-                    type="meeting",
-                    # Add a special flag for the UI
-                    raw_text="google_event" 
-                ))
+            # Use dateutil parser (it's much more robust than fromisoformat)
+            try:
+                from dateutil import parser
+                dt_utc = parser.parse(start)
+                if dt_utc.tzinfo is None:
+                     dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+                
+                # Check if event is actually for the target date in IST
+                dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                if dt_ist.date() == target_date:
+                    # Create a Task-like object that won't confuse SQLAlchemy
+                    tasks.append(Task(
+                        id=0, 
+                        title=event.get('summary', 'Google Event'),
+                        description=event.get('description', ''),
+                        due_date=dt_utc,
+                        status="completed" if event.get('status') == 'confirmed' else 'pending',
+                        type="meeting",
+                        raw_text="google_event",
+                        user_id=user_id,
+                        created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
+                        updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
+                    ))
+            except Exception as parse_error:
+                logger.error(f"⚠️ Failed to parse Google event date '{start}': {parse_error}")
     except Exception as e:
-        logger.error(f"⚠️ Failed to merge Google events into plan: {e}")
+        logger.error(f"❌ Failed to merge Google events into plan: {e}")
     
-    # Re-sort after merging
-    tasks.sort(key=lambda x: x.due_date or datetime.min.replace(tzinfo=timezone.utc))
+    # Re-sort after merging (ensure we handle missing dates)
+    from datetime import datetime
+    tasks.sort(key=lambda x: x.due_date if x.due_date else datetime.min.replace(tzinfo=timezone.utc))
     
     # 🚀 NEW: Fetch "Upcoming" tasks (next 5 tasks after today)
     upcoming_query = select(Task).filter(

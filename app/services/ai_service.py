@@ -154,11 +154,29 @@ CORE MISSION:
 2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
    - **FUTURE TIME ONLY**: Your extracted time MUST always be in the future relative to the Current Local Time. If the user specifies a time that has already passed today, automatically move the date to tomorrow.
 
-LIFECYCLE RULES:
-- **INITIAL INPUT** (Task without time): Set status="incomplete", polish the grammar into a direct 2nd person action, and ask "At what time should I set this for you?".
-- **FOLLOW-UP INPUT** (Task + Time provided): If both are present, set status="ready", create a polished 2nd person sentence with time, and confirm.
-- **CRITICAL**: If the input contains a task and a time, treat as COMPLETE (status="ready").
-- NEVER return empty strings for 'title' or 'corrected_sentence'.
+Return ONLY a JSON object based on these examples:
+
+Example 1:
+Input: "remind me to call my mom tomorrow morning 5 o clock"
+Output: {{
+  "status": "ready",
+  "title": "Call Mom",
+  "corrected_sentence": "You have a reminder to call your mom tomorrow at 5:00 AM.",
+  "time": "2026-01-29T05:00:00",
+  "type": "reminder",
+  "message": "Got it. I've set a reminder to call your mom for tomorrow morning at 5 AM."
+}}
+
+Example 2:
+Input: "add task to mee my friends tomorrow"
+Output: {{
+  "status": "incomplete",
+  "title": "Meet Friends",
+  "corrected_sentence": "Meet your friends.",
+  "time": null,
+  "type": "task",
+  "message": "Sure. At what time tomorrow should I set this for you?"
+}}
 
 Return ONLY a JSON object:
 {{

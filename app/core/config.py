@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     FIREBASE_CREDENTIALS: str = "firebase-service-account.json"
     SECRET_KEY: str = os.getenv("SECRET_KEY", "dev_secret_key_change_me_in_prod")
     GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
+    GOOGLE_CLIENT_ID: str | None = os.getenv("GOOGLE_CLIENT_ID")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
 
     model_config = SettingsConfigDict(env_file=os.path.join(os.path.dirname(__file__), "..", "..", ".env"), case_sensitive=True, extra="ignore")

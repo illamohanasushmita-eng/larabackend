@@ -119,6 +119,39 @@ async def generate_ai_summary(summary_type: str, user_name: str, tasks: list) ->
         logger.error(f"Error generating AI summary: {str(e)}")
         return "You have some tasks scheduled for today. Have a productive day!" if summary_type == "MORNING" else "Hope you had a productive day!"
 
+async def generate_friendly_reminder(title: str, due_time: str, lead_mins: int) -> str:
+    """
+    Generate a friendly reminder message using Groq.
+    - lead_mins: 20, 10, or 0 (Due Now)
+    """
+    client = get_groq_client()
+    if not client:
+        return f"Reminder: {title} at {due_time}"
+
+    if lead_mins == 20:
+        time_msg = "in 20 minutes"
+    elif lead_mins == 10:
+        time_msg = "in 10 minutes"
+    else:
+        time_msg = "right now"
+
+    system_prompt = "You are LARA, a cheerful and supportive AI personal assistant. Create a VERY SHORT, one-sentence friendly reminder for a push notification."
+    user_prompt = f"The task is '{title}' and it's due {time_msg} (at {due_time}). Phrase it nicely with an emoji."
+
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            model="llama-3.1-8b-instant",
+            max_tokens=60
+        )
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Error generating AI reminder: {str(e)}")
+        return f"Friendly reminder: {title} at {due_time}!"
+
 async def process_voice_command(text: str, current_time: str = None) -> dict:
     """
     Assistant Lifecycle Processing:

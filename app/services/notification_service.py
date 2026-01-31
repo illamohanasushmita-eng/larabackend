@@ -8,6 +8,9 @@ from app.core.fcm_manager import fcm_manager
 import json
 import random
 import logging
+from app.services.ai_service import generate_friendly_reminder
+from app.models.user import User
+from app.services import google_calendar_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,14 +22,10 @@ async def check_and_send_notifications(db: AsyncSession):
     # 🌍 Fix: Use timezone-aware UTC now to match DB
     now = datetime.now(timezone.utc)
     
-    # 1. Check for 20-minute reminders (tasks due in 18-22 mins)
-    await process_reminders(db, now, minutes=20)
-    
-    # 2. Check for 10-minute reminders (tasks due in 8-12 mins)
-    await process_reminders(db, now, minutes=10)
-
-    # 3. Check for Due Now reminders (tasks due right now)
-    await process_reminders(db, now, minutes=0)
+    # 1-3. Check for 20-minute, 10-minute, and Due Now reminders for Local & Google
+    for mins in [20, 10, 0]:
+        await process_reminders(db, now, minutes=mins)
+        await process_google_reminders(db, now, minutes=mins)
 
     # 4. Check for completion feedback (tasks due in the past 5-10 mins, still pending)
     await check_task_completion_reminders(db, now)
@@ -140,8 +139,6 @@ async def get_user_tasks_for_day(db: AsyncSession, user_id: int, target_date):
             
     return tasks
 
-
-
 async def check_task_completion_reminders(db: AsyncSession, now: datetime):
     """
     Every 30 minutes after due time, check if user completed the task.
@@ -196,8 +193,6 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
                     db.add(task)
     except Exception as e:
         print(f"❌ [Nudge] Error in nudge logic: {e}")
-
-
 
 async def send_completion_poll(db: AsyncSession, task: Task, token: str):
     """Send a 'How did it go?' notification with interactive actions"""
@@ -275,18 +270,98 @@ async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
     reminders = result.all()
     
     for task, token in reminders:
-        success = await send_friendly_push(db, task, token, minutes)
+        # 🤖 Generate AI message
+        due_time_str = format_local_time(task.due_date)
+        ai_message = await generate_friendly_reminder(task.title, due_time_str, minutes)
+        
+        success = await send_friendly_push(db, task, token, minutes, ai_message)
         if success:
-            # Mark as notified to avoid duplicate sends
-            if minutes == 20:
-                task.notified_20m = True
-            elif minutes == 10:
-                task.notified_10m = True
-            else:
-                task.notified_due = True
+            if minutes == 20: task.notified_20m = True
+            elif minutes == 10: task.notified_10m = True
+            else: task.notified_due = True
             
             db.add(task)
-            print(f"🚀 [FCM] Sent {minutes}m reminder for: {task.title}")
+            print(f"🚀 [AI-FCM] Sent {minutes}m reminder for: {task.title}")
+
+async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int):
+    """Fetch and process reminders for Google Calendar/Tasks"""
+    # Find users who are synced
+    from sqlalchemy import select
+    query = select(User, UserSetting).join(UserSetting, User.id == UserSetting.user_id).filter(
+        and_(
+            User.google_refresh_token != None,
+            UserSetting.push_enabled == True,
+            UserSetting.fcm_token != None
+        )
+    )
+    res = await db.execute(query)
+    users = res.all()
+    
+    for user, setting in users:
+        try:
+            # Check a wider window for Google to be safe
+            window_start = now + timedelta(minutes=minutes - 1)
+            window_end = now + timedelta(minutes=minutes + 1)
+            
+            data = await google_calendar_service.get_google_data(
+                user, db, 
+                time_min=window_start.isoformat().replace('+00:00', 'Z'),
+                time_max=window_end.isoformat().replace('+00:00', 'Z')
+            )
+            
+            # Combine all Google items
+            all_items = []
+            for e in data.get("events", []):
+                start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date')
+                if start: all_items.append({"id": e.get("id"), "title": e.get("summary", "Event"), "time": start, "type": "meeting"})
+            
+            for t in data.get("tasks", []):
+                due = t.get("due")
+                if due: all_items.append({"id": t.get("id"), "title": t.get("title", "Task"), "time": due, "type": "task"})
+
+            from dateutil import parser
+            for item in all_items:
+                try:
+                    item_time = parser.parse(item["time"])
+                    if item_time.tzinfo is None: item_time = item_time.replace(tzinfo=timezone.utc)
+                    
+                    # Check if it falls exactly in our window
+                    if window_start <= item_time <= window_end:
+                        # Check if already notified for this stage to avoid spam
+                        notif_key = f"google_{item['id']}_{minutes}"
+                        check_query = select(Notification).where(
+                            and_(
+                                Notification.user_id == user.id,
+                                Notification.data['google_notif_key'].astext == notif_key
+                            )
+                        )
+                        existing = await db.execute(check_query)
+                        if existing.scalar_one_or_none():
+                            continue
+
+                        # 🤖 Generate AI message
+                        due_time_str = format_local_time(item_time)
+                        ai_message = await generate_friendly_reminder(item["title"], due_time_str, minutes)
+
+                        # Send Push
+                        success = await fcm_manager.send_notification(
+                            token=setting.fcm_token,
+                            title=f"LARA: {ai_message[:30]}...",
+                            body=ai_message,
+                            data={"type": "google_reminder", "google_id": item["id"], "lead": str(minutes)}
+                        )
+                        
+                        if success:
+                            # Record so we don't repeat
+                            await record_notification(
+                                db, user.id, "Google Reminder", ai_message, 
+                                {"type": "google_reminder", "google_notif_key": notif_key}
+                            )
+                            print(f"🚀 [AI-Google] Sent {minutes}m reminder for: {item['title']}")
+                except Exception as e:
+                    logger.error(f"Error processing Google item: {e}")
+        except Exception as e:
+            logger.error(f"Failed to process Google reminders for user {user.id}: {e}")
     
     # ❌ Local commit removed to prevent greenlet conflicts
 
@@ -350,10 +425,15 @@ async def get_natural_message(task: Task, lead_mins: int):
     
     return f"{task.title} soon! 🔔", f"{starter} {task.title} scheduled for {due_time}."
 
-async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins: int):
+async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins: int, ai_message: str = None):
     """Send a human-friendly FCM notification with natural language"""
     
-    title_text, body_text = await get_natural_message(task, lead_mins)
+    if ai_message:
+        title_text = "LARA Update ✨" # Simple title, AI handles body
+        body_text = ai_message
+    else:
+        # Fallback to old logic if AI fails
+        title_text, body_text = await get_natural_message(task, lead_mins)
 
     # Specific override for medicine
     if task.type == "medicine" and lead_mins == 0:
@@ -402,9 +482,11 @@ async def record_notification(db: AsyncSession, user_id: int, title: str, body: 
         
         should_skip = False
         if data:
-            # Skip countdowns
-            if data.get("lead_time") in ["10", "20"]:
-                should_skip = True
+            # Skip countdowns unless it's a Google reminder we need to track
+            if data.get("type") != "google_reminder":
+                if data.get("lead_time") in ["10", "20"]:
+                    should_skip = True
+            
             # Skip completion polls (follow-ups)
             if data.get("type") == "completion_poll":
                 should_skip = True
@@ -423,5 +505,3 @@ async def record_notification(db: AsyncSession, user_id: int, title: str, body: 
         # Commit will be handled by the calling batch process
     except Exception as e:
         logger.error(f"❌ [Inbox] Failed to record notification: {e}")
-
-

@@ -163,7 +163,22 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
         if overdue_tasks:
             print(f"🧐 [Nudge] Checking {len(overdue_tasks)} potential overdue tasks...")
 
-        for task, token in overdue_tasks:
+        # ⚡ CRITICAL: Only send ONE nudge per check cycle to prevent spam
+        # Sort tasks by how long they've been waiting (oldest first)
+        nudges_sent = 0
+        max_nudges_per_cycle = 1
+        
+        # Sort by waiting time (longest waiting gets priority)
+        sorted_tasks = sorted(overdue_tasks, key=lambda x: (
+            x[0].last_nudged_at if x[0].last_nudged_at else x[0].due_date
+        ))
+
+        for task, token in sorted_tasks:
+            # Stop if we've already sent max nudges this cycle
+            if nudges_sent >= max_nudges_per_cycle:
+                print(f"⏸️ [Nudge] Already sent {max_nudges_per_cycle} nudge(s) this cycle. Waiting for next check.")
+                break
+
             # Improved Logic:
             # 1. If we already poked them, wait 30 mins from THAT poke
             # 2. If never poked, wait 30 mins from Due Date
@@ -199,6 +214,7 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
                     db.add(task)
                     await db.commit()  # ⚡ CRITICAL: Commit immediately to prevent re-sending every minute
                     print(f"✅ [Nudge] Updated last_nudged_at for task {task.id}")
+                    nudges_sent += 1  # Increment counter
     except Exception as e:
         print(f"❌ [Nudge] Error in nudge logic: {e}")
 

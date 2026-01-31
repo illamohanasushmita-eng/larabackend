@@ -216,6 +216,10 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         # 1. Merge Events
         google_events = google_data.get("events", [])
         for event in google_events:
+            # 🛡️ Skip cancelled/deleted events
+            if event.get('status') == 'cancelled':
+                continue
+                
             start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
             if not start: continue
             
@@ -242,6 +246,10 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         # 2. Merge Google Tasks
         google_tasks = google_data.get("tasks", [])
         for g_task in google_tasks:
+            # 🛡️ Skip deleted or hidden tasks
+            if g_task.get('deleted') or g_task.get('hidden'):
+                continue
+
             # Google Tasks often don't have a specific time, just a date ('due')
             due_str = g_task.get('due')
             task_title = g_task.get('title', 'Google Task')
@@ -256,7 +264,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
                 id=0, title=f"[Google] {task_title}",
                 description=g_task.get('notes', ''),
                 due_date=task_due, type="task", raw_text="google_task",
-                status="pending", # 🟢 Always start as pending
+                status="completed" if g_task.get('status') == 'completed' else "pending",
                 user_id=user_id,
                 created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                 updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)

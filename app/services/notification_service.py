@@ -348,10 +348,16 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
             # Combine all Google items
             all_items = []
             for e in data.get("events", []):
+                # 🛡️ Skip cancelled events
+                if e.get('status') == 'cancelled':
+                    continue
                 start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date')
                 if start: all_items.append({"id": e.get("id"), "title": e.get("summary", "Event"), "time": start, "type": "meeting"})
             
             for t in data.get("tasks", []):
+                # 🛡️ Skip deleted, hidden or completed tasks
+                if t.get('deleted') or t.get('hidden') or t.get('status') == 'completed':
+                    continue
                 due = t.get("due")
                 if due: all_items.append({"id": t.get("id"), "title": t.get("title", "Task"), "time": due, "type": "task"})
 

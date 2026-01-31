@@ -64,37 +64,14 @@ class FCMManager:
             return None
 
         try:
-            # Prepare android and apns config for click actions
-            # We use 'fcm_default_channel' which is created in notificationService.ts
-            android_config = messaging.AndroidConfig(
-                priority='high',
-                notification=messaging.AndroidNotification(
-                    channel_id='fcm_default_channel',
-                    click_action=click_action, # Only apply if provided
-                    icon='notification_icon',
-                    color='#F59331',
-                    sound='default' # 🔊 Enable sound for Android
-                )
-            )
-
-            # Prepare iOS config
-            apns_config = messaging.APNSConfig(
-                payload=messaging.APNSPayload(
-                    aps=messaging.Aps(
-                        category=click_action, # Only apply if provided
-                        sound='default' # 🔊 Enable sound for iOS
-                    )
-                )
-            )
-
             # 🛡️ Defensive Check: Ensure Title and Body are never empty
             if not title or not title.strip():
-                print(f"⚠️ Notification Title missing for token {token[:10]}... Using default.")
-                title = "LARA Notification"
+                print(f"⚠️ Notification Title missing for token {token[:10]}... Skipping.")
+                return None
             
             if not body or not body.strip():
-                print(f"⚠️ Notification Body missing for title '{title}'. Using fallback.")
-                body = "Tap to view details."
+                print(f"⚠️ Notification Body missing for title '{title}'. Skipping.")
+                return None
 
             # Construct data payload including notification content
             data_payload = data or {}
@@ -103,9 +80,19 @@ class FCMManager:
             if click_action:
                 data_payload['click_action'] = click_action
 
-            # ⚡ CRITICAL: Use DATA-ONLY messsage (remove 'notification' block)
-            # This prevents FCM from auto-displaying, allowing our JS handlers
-            # to show the notification EXACTLY ONCE with the correct buttons.
+            # ⚡ CRITICAL FIX: For DATA-ONLY messages, DON'T include AndroidNotification or APNSPayload
+            # If we include them, Android auto-displays empty notifications!
+            # We only set priority to ensure delivery
+            android_config = messaging.AndroidConfig(
+                priority='high'
+            )
+
+            apns_config = messaging.APNSConfig(
+                headers={'apns-priority': '10'}
+            )
+
+            # ⚡ DATA-ONLY message - no 'notification' block, no auto-display
+            # Our JS handlers will display it with full control
             message = messaging.Message(
                 data=data_payload,
                 token=token,

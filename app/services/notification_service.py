@@ -181,6 +181,12 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
             # Calculate gap
             delta_minutes = (now - baseline_time).total_seconds() / 60
             
+            # ⚡ CRITICAL: Prevent backlog spam - don't send nudges for very old tasks
+            # If task is more than 6 hours overdue and never nudged, skip it
+            if not last_ref and delta_minutes > 360:  # 6 hours
+                print(f"⏩ [Nudge] Skipping old task: '{task.title}' (Overdue by {int(delta_minutes/60)}h)")
+                continue
+            
             # Trigger if gap >= 30m
             if delta_minutes >= 30:
                 print(f"🔄 [Nudge] Sending 30m follow-up for: '{task.title}' (Gap: {int(delta_minutes)}m)")

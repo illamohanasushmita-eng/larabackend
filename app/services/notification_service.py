@@ -464,14 +464,14 @@ async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins
     
     data = {
         "task_id": str(task.id),
-        "type": "completion_poll" if (is_nudge or is_due) else "reminder",
+        "type": "completion_poll" if is_nudge else "reminder",
         "lead_time": str(lead_mins)
     }
     
     try:
-        # ✅ Buttons appear for 'Due Now' (0m) AND 'Nudges' (-1)
-        # For pre-notifications (10, 20), click_act will be None
-        click_act = "TASK_COMPLETION" if (is_due or is_nudge) else None
+        # ✅ Buttons ONLY appear for 'Nudges' (-1) - the 30-min follow-up
+        # For 'Due Now' (0m) and pre-notifications (10, 20), NO buttons
+        click_act = "TASK_COMPLETION" if is_nudge else None
         
         response = await fcm_manager.send_notification(
             token=token,

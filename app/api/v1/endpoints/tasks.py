@@ -89,3 +89,15 @@ async def delete_task(
     if not deleted_task:
         raise HTTPException(status_code=404, detail="Task not found")
     return deleted_task
+
+@router.post("/{task_id}/postpone", response_model=TaskResponse)
+async def postpone_task(
+    task_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Postpone task reminder - updates last_nudged_at so backend waits 30min before next nudge"""
+    postponed_task = await task_service.postpone_task_reminder(db, task_id, current_user.id)
+    if not postponed_task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return postponed_task

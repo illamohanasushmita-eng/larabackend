@@ -191,6 +191,8 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
                 if success:
                     task.last_nudged_at = now
                     db.add(task)
+                    await db.commit()  # ⚡ CRITICAL: Commit immediately to prevent re-sending every minute
+                    print(f"✅ [Nudge] Updated last_nudged_at for task {task.id}")
     except Exception as e:
         print(f"❌ [Nudge] Error in nudge logic: {e}")
 

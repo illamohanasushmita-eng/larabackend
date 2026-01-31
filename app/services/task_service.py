@@ -80,6 +80,21 @@ async def update_task_status(db: AsyncSession, task_id: int, task_update: TaskUp
     await db.refresh(db_task)
     return db_task
 
+async def postpone_task_reminder(db: AsyncSession, task_id: int, user_id: int):
+    """Update last_nudged_at to postpone reminder for 30 minutes"""
+    from datetime import datetime, timezone
+    db_task = await get_task(db, task_id, user_id)
+    if not db_task:
+        return None
+    
+    # Update last_nudged_at to now, so backend waits another 30 min
+    db_task.last_nudged_at = datetime.now(timezone.utc)
+    db.add(db_task)
+    await db.commit()
+    await db.refresh(db_task)
+    print(f"⏳ [Postpone] Task {task_id} postponed for 30 minutes")
+    return db_task
+
 async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     from datetime import date, datetime, time
     import random

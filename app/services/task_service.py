@@ -189,46 +189,66 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
     # Sort today's tasks
     tasks.sort(key=lambda x: x.due_date)
 
-    # 🚀 NEW: Merge Google Calendar Events for today
+    # 🚀 NEW: Merge Google Calendar Data (Events + Tasks)
     try:
         from app.services import google_calendar_service
-        # Pass the strict UTC window to fetch everything for this specific day
-        google_events = await google_calendar_service.get_calendar_events(
+        google_data = await google_calendar_service.get_google_data(
             user, db, 
             time_min=dt_utc_start.isoformat().replace('+00:00', 'Z'),
             time_max=dt_utc_end.isoformat().replace('+00:00', 'Z')
         )
+        
+        # 1. Merge Events
+        google_events = google_data.get("events", [])
         for event in google_events:
             start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
             if not start: continue
             
-            # Use dateutil parser (it's much more robust than fromisoformat)
             try:
                 from dateutil import parser
                 dt_utc = parser.parse(start)
                 if dt_utc.tzinfo is None:
                      dt_utc = dt_utc.replace(tzinfo=timezone.utc)
                 
-                # Check if event is actually for the target date in IST
                 dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
                 if dt_ist.date() == target_date:
-                    # Create a Task-like object that won't confuse SQLAlchemy
                     tasks.append(Task(
-                        id=0, 
-                        title=event.get('summary', 'Google Event'),
+                        id=0, title=event.get('summary', 'Google Event'),
                         description=event.get('description', ''),
-                        due_date=dt_utc,
+                        due_date=dt_utc, type="meeting", raw_text="google_event",
                         status="completed" if event.get('status') == 'confirmed' else 'pending',
-                        type="meeting",
-                        raw_text="google_event",
                         user_id=user_id,
                         created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                         updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
                     ))
-            except Exception as parse_error:
-                logger.error(f"⚠️ Failed to parse Google event date '{start}': {parse_error}")
+            except Exception as pe:
+                logger.error(f"⚠️ Event parse error: {pe}")
+
+        # 2. Merge Google Tasks
+        google_tasks = google_data.get("tasks", [])
+        for g_task in google_tasks:
+            # Google Tasks often don't have a specific time, just a date ('due')
+            due_str = g_task.get('due')
+            task_title = g_task.get('title', 'Google Task')
+            
+            # Treat it as an all-day/unscheduled task if no due date
+            task_due = None
+            if due_str:
+                from dateutil import parser
+                task_due = parser.parse(due_str).replace(tzinfo=timezone.utc)
+
+            tasks.append(Task(
+                id=0, title=f"[Google] {task_title}",
+                description=g_task.get('notes', ''),
+                due_date=task_due, type="task", raw_text="google_task",
+                status="completed" if g_task.get('status') == 'completed' else 'pending',
+                user_id=user_id,
+                created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
+                updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
+            ))
+
     except Exception as e:
-        logger.error(f"❌ Failed to merge Google events into plan: {e}")
+        logger.error(f"❌ Failed to merge Google data into plan: {e}")
     
     # Re-sort after merging (ensure we handle missing dates)
     from datetime import datetime

@@ -29,7 +29,8 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
             'openid',
             'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/userinfo.email',
-            'https://www.googleapis.com/auth/calendar.events'
+            'https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/tasks.readonly'
         ],
         redirect_uri='https://web-production-6ff602.up.railway.app/api/v1/calendar/google/sync'
     )
@@ -50,13 +51,12 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
     
     return user
 
-async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None, time_max: str = None):
+async def get_google_data(user: User, db: AsyncSession, time_min: str = None, time_max: str = None):
     """
-    Fetch events from Google Calendar with automatic token refreshing.
+    Fetch both Events and Tasks from Google.
     """
     if not user.google_refresh_token:
-        print("ℹ️ No Google refresh token found for user.")
-        return []
+        return {"events": [], "tasks": []}
 
     import google.oauth2.credentials
     from google.auth.transport.requests import Request
@@ -67,46 +67,43 @@ async def get_calendar_events(user: User, db: AsyncSession, time_min: str = None
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.GOOGLE_CLIENT_ID,
         client_secret=settings.GOOGLE_CLIENT_SECRET,
-        scopes=['https://www.googleapis.com/auth/calendar.events']
+        scopes=[
+            'https://www.googleapis.com/auth/calendar.events',
+            'https://www.googleapis.com/auth/tasks.readonly'
+        ]
     )
 
     try:
-        # 🔄 Refresh token if expired
         if creds.expired:
-            print("🔄 Google Access Token expired, refreshing...")
             creds.refresh(Request())
-            
-            # Save the new tokens to the database
             user.google_access_token = creds.token
-            if creds.refresh_token:
-                user.google_refresh_token = creds.refresh_token
-            user.google_token_expiry = creds.expiry
-            
             db.add(user)
             await db.commit()
-            print("✅ Tokens refreshed and saved successfully.")
 
-        service = build('calendar', 'v3', credentials=creds)
-        
+        # 1. Fetch Calendar Events
+        cal_service = build('calendar', 'v3', credentials=creds)
         if not time_min:
             time_min = datetime.datetime.utcnow().isoformat() + 'Z'
         if not time_max:
             time_max = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
 
-        print(f"📅 Fetching events from {time_min} to {time_max}")
-
-        events_result = service.events().list(
-            calendarId='primary', 
-            timeMin=time_min,
-            timeMax=time_max,
-            singleEvents=True,
-            orderBy='startTime'
+        events_result = cal_service.events().list(
+            calendarId='primary', timeMin=time_min, timeMax=time_max, singleEvents=True
         ).execute()
-        
         events = events_result.get('items', [])
-        print(f"✅ Google API returned {len(events)} events.")
-        return events
+
+        # 2. Fetch Google Tasks
+        tasks = []
+        try:
+            tasks_service = build('tasks', 'v1', credentials=creds)
+            # Fetch from the "My Tasks" (default) list
+            tasks_result = tasks_service.tasks().list(tasklist='@default').execute()
+            tasks = tasks_result.get('items', [])
+        except Exception as te:
+            print(f"⚠️ Tasks API error (might need enablement): {te}")
+
+        return {"events": events, "tasks": tasks}
         
     except Exception as e:
-        print(f"❌ Google API Error in get_calendar_events: {e}")
-        return []
+        print(f"❌ Google API Error: {e}")
+        return {"events": [], "tasks": []}

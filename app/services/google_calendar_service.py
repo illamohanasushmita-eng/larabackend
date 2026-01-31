@@ -9,6 +9,15 @@ from app.core.config import settings
 # Path to the credentials file you uploaded
 CLIENT_SECRET_FILE = "client_secret.json"
 
+# Single source of truth for scopes
+SCOPES = [
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.profile',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/tasks.readonly'
+]
+
 async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
     """
     Exchange authorization code for access and refresh tokens.
@@ -25,13 +34,7 @@ async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
 
     flow = Flow.from_client_config(
         client_config,
-        scopes=[
-            'openid',
-            'https://www.googleapis.com/auth/userinfo.profile',
-            'https://www.googleapis.com/auth/userinfo.email',
-            'https://www.googleapis.com/auth/calendar.events',
-            'https://www.googleapis.com/auth/tasks.readonly'
-        ],
+        scopes=SCOPES,
         redirect_uri='https://web-production-6ff602.up.railway.app/api/v1/calendar/google/sync'
     )
 
@@ -61,16 +64,16 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
     import google.oauth2.credentials
     from google.auth.transport.requests import Request
 
+    # 1. Initialize Credentials WITHOUT enforcing scopes.
+    # This prevents "invalid_scope" errors if the user's token hasn't been upgraded yet.
+    # The refresh() call will just refresh whatever scopes were originally granted.
     creds = google.oauth2.credentials.Credentials(
         token=user.google_access_token,
         refresh_token=user.google_refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.GOOGLE_CLIENT_ID,
-        client_secret=settings.GOOGLE_CLIENT_SECRET,
-        scopes=[
-            'https://www.googleapis.com/auth/calendar.events',
-            'https://www.googleapis.com/auth/tasks.readonly'
-        ]
+        client_secret=settings.GOOGLE_CLIENT_SECRET
+        # DO NOT Pass scopes here, let the token dictate them.
     )
 
     try:
@@ -81,15 +84,11 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
                 db.add(user)
                 await db.commit()
             except Exception as refresh_err:
-                 # If refreshing with all scopes fails (e.g. invalid_scope), try with just calendar
-                 print(f"⚠️ Refresh failed (likely scope mismatch): {refresh_err}")
-                 if "invalid_scope" in str(refresh_err):
-                     # Downgrade scopes for this request only
-                     creds.scopes = ['https://www.googleapis.com/auth/calendar.events']
-                     creds.refresh(Request())
-                     print("✅ Refresh succeeded with limited scopes.")
+                 print(f"⚠️ Refresh failed: {refresh_err}")
+                 # If refresh fails entirely, we can't proceed
+                 return {"events": [], "tasks": []}
 
-        # 1. Fetch Calendar Events
+        # 1. Fetch Calendar Events (Assume this scope is always present for synced users)
         events = []
         try:
             cal_service = build('calendar', 'v3', credentials=creds)
@@ -107,14 +106,30 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
 
         # 2. Fetch Google Tasks
         tasks = []
-        # Only try tasks if we likely have the scope
-        if 'https://www.googleapis.com/auth/tasks.readonly' in creds.scopes:
+        # Dynamically check if our token has the tasks scope
+        # Note: creds.scopes might be None immediately after init, but populated after refresh/use.
+        # Alternatively, we just try-catch.
+        
+        has_tasks_scope = False
+        if creds.scopes:
+             if 'https://www.googleapis.com/auth/tasks.readonly' in creds.scopes:
+                 has_tasks_scope = True
+        else:
+             # If scopes not populated, we can try optimistic, or assuming NO if not sure.
+             # But 'google-auth' usually populates it on refresh. 
+             # Let's simple Try-Catch block handle it, which is robust.
+             has_tasks_scope = True 
+
+        if has_tasks_scope:
             try:
                 tasks_service = build('tasks', 'v1', credentials=creds)
                 tasks_result = tasks_service.tasks().list(tasklist='@default').execute()
                 tasks = tasks_result.get('items', [])
             except Exception as te:
-                print(f"⚠️ Tasks API error (might need re-sync): {te}")
+                if "403" in str(te) or "401" in str(te):
+                    print(f"ℹ️ Tasks API skipped (Scope likely missing, user needs to re-sync).")
+                else:
+                    print(f"⚠️ Tasks API error: {te}")
 
         return {"events": events, "tasks": tasks}
         

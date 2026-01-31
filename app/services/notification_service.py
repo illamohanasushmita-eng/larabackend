@@ -75,7 +75,6 @@ async def check_and_send_summaries(db: AsyncSession, now_utc: datetime):
                     await record_notification(db, user.id, "Good Morning! ☀️", message, {"type": "morning_summary"})
                     setting.last_morning_summary_at = current_date_str
                     db.add(setting)
-                    await db.commit()
 
         # --- EVENING CHECK ---
         if setting.evening_enabled and setting.evening_time == current_time_str:
@@ -92,7 +91,6 @@ async def check_and_send_summaries(db: AsyncSession, now_utc: datetime):
                     await record_notification(db, user.id, "Evening Update 🌙", message, {"type": "evening_summary"})
                     setting.last_evening_summary_at = current_date_str
                     db.add(setting)
-                    await db.commit()
 
 async def get_user_tasks_for_day(db: AsyncSession, user_id: int, target_date):
     """Helper to fetch tasks for a specific user on a specific day using robust IST filtering"""
@@ -140,8 +138,6 @@ async def get_user_tasks_for_day(db: AsyncSession, user_id: int, target_date):
             
     return tasks
 
-    return tasks
-
 async def check_task_completion_reminders(db: AsyncSession, now: datetime):
     """
     Every 30 minutes after due time, check if user completed the task.
@@ -164,14 +160,9 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
         overdue_tasks = result.all()
         
         if overdue_tasks:
-            # Filter out potentially stale objects from greenlet cache
-            pass 
+            print(f"🧐 [Nudge] Checking {len(overdue_tasks)} potential overdue tasks...")
 
         for task, token in overdue_tasks:
-            # DOUBLE CHECK status in case it changed since query (concurrency)
-            if task.status == 'completed':
-                continue
-
             # Improved Logic:
             # 1. If we already poked them, wait 30 mins from THAT poke
             # 2. If never poked, wait 30 mins from Due Date
@@ -199,8 +190,6 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
                 if success:
                     task.last_nudged_at = now
                     db.add(task)
-                    # ⚡ CRITICAL COMMIT: Must commit here or loop will repeat forever
-                    await db.commit()
     except Exception as e:
         print(f"❌ [Nudge] Error in nudge logic: {e}")
 
@@ -286,10 +275,6 @@ async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
     
     for task, token in reminders:
         try:
-             # DOUBLE CHECK status to prevent "Ghost Reminders" (completed but scheduler cached query)
-            if task.status == 'completed':
-                continue
-
             # 🤖 Generate AI message
             due_time_str = format_local_time(task.due_date)
             ai_message = await generate_friendly_reminder(task.title, due_time_str, minutes)
@@ -375,7 +360,6 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
                                 db, user.id, "Google Reminder", ai_message, 
                                 {"type": "google_reminder", "google_id": item["id"], "lead": str(minutes), "google_notif_key": notif_key}
                             )
-                            # ⚡ CRITICAL COMMIT for Google lock
                             await db.commit()
                         except Exception as db_err:
                             # If commit fails (e.g. unique constraint race), skip sending

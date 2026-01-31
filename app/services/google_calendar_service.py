@@ -123,8 +123,15 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
         if has_tasks_scope:
             try:
                 tasks_service = build('tasks', 'v1', credentials=creds)
-                tasks_result = tasks_service.tasks().list(tasklist='@default').execute()
-                tasks = tasks_result.get('items', [])
+                # 1. Get all task lists
+                tasklists_result = tasks_service.tasklists().list().execute()
+                tasklists = tasklists_result.get('items', [])
+                
+                # 2. Fetch tasks from each list
+                for tl in tasklists:
+                    t_res = tasks_service.tasks().list(tasklist=tl['id']).execute()
+                    tasks.extend(t_res.get('items', []))
+                    
             except Exception as te:
                 if "403" in str(te) or "401" in str(te):
                     print(f"ℹ️ Tasks API skipped (Scope likely missing, user needs to re-sync).")

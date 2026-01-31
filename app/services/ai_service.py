@@ -135,9 +135,14 @@ async def generate_friendly_reminder(title: str, due_time: str, lead_mins: int) 
     else:
         time_msg = "right now"
 
-    system_prompt = "You are LARA, a cheerful and supportive AI personal assistant. Create a VERY SHORT, one-sentence friendly reminder for a push notification."
+    system_prompt = (
+        "You are LARA, a cheerful and supportive AI personal assistant. "
+        "Create a VERY SHORT, one-sentence friendly reminder for a push notification. "
+        "IMPORTANT: You MUST use the exact time duration provided (e.g., '10 minutes') if you mention a duration. "
+        "Do not change or hallucinate a different duration."
+    )
     user_prompt = f"The task is '{title}' and it's due {time_msg} (at {due_time}). Phrase it nicely with an emoji."
-
+    
     try:
         chat_completion = client.chat.completions.create(
             messages=[
@@ -145,9 +150,18 @@ async def generate_friendly_reminder(title: str, due_time: str, lead_mins: int) 
                 {"role": "user", "content": user_prompt}
             ],
             model="llama-3.1-8b-instant",
-            max_tokens=60
+            max_tokens=60,
+            temperature=0.3 # Lower temperature for higher accuracy
         )
-        return chat_completion.choices[0].message.content.strip()
+        ai_response = chat_completion.choices[0].message.content.strip()
+        
+        # 🛡️ Safety check: If AI hallucinates '20' for a '10' minute lead, or vice-versa, correct it.
+        if lead_mins == 10 and "20" in ai_response and "10" not in ai_response:
+             ai_response = ai_response.replace("20", "10")
+        elif lead_mins == 20 and "10" in ai_response and "20" not in ai_response:
+             ai_response = ai_response.replace("10", "20")
+
+        return ai_response
     except Exception as e:
         logger.error(f"Error generating AI reminder: {str(e)}")
         return f"Friendly reminder: {title} at {due_time}!"

@@ -151,6 +151,7 @@ async def check_task_completion_reminders(db: AsyncSession, now: datetime):
             and_(
                 Task.status == "pending",
                 Task.due_date <= now, # Find all overdue tasks
+                Task.notified_due == True,  # ⚡ CRITICAL: Only nudge tasks that got their "Due Now" alert
                 UserSetting.push_enabled == True,
                 UserSetting.fcm_token != None
             )
@@ -239,10 +240,11 @@ async def clear_stale_token(db: AsyncSession, user_id: int):
 async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
     """Process reminders for a specific lead time (10m or 20m)"""
     
-    # Define range to catch tasks (Widen 'Due Now' window)
+    # Define range to catch tasks
     if minutes == 0:
-        # Catch anything due in the last 5 minutes that hasn't been notified
-        start_range = now - timedelta(minutes=5)
+        # Narrow window: Only catch tasks due in the last 2 minutes (not 5)
+        # This prevents overlap with the nudge system
+        start_range = now - timedelta(minutes=2)
         end_range = now + timedelta(minutes=1)
     else:
         start_range = now + timedelta(minutes=minutes - 2)

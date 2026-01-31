@@ -90,18 +90,24 @@ class FCMManager:
             # 🛡️ Defensive Check: Ensure Title and Body are never empty
             if not title or not title.strip():
                 print(f"⚠️ Notification Title missing for token {token[:10]}... Using default.")
-                title = "New Notification"
+                title = "LARA Notification"
             
             if not body or not body.strip():
                 print(f"⚠️ Notification Body missing for title '{title}'. Using fallback.")
                 body = "Tap to view details."
 
+            # Construct data payload including notification content
+            data_payload = data or {}
+            data_payload['notification_title'] = title
+            data_payload['notification_body'] = body
+            if click_action:
+                data_payload['click_action'] = click_action
+
+            # ⚡ CRITICAL: Use DATA-ONLY messsage (remove 'notification' block)
+            # This prevents FCM from auto-displaying, allowing our JS handlers
+            # to show the notification EXACTLY ONCE with the correct buttons.
             message = messaging.Message(
-                notification=messaging.Notification(
-                    title=title,
-                    body=body,
-                ),
-                data=data or {},
+                data=data_payload,
                 token=token,
                 android=android_config,
                 apns=apns_config

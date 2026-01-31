@@ -202,7 +202,8 @@ async def send_completion_poll(db: AsyncSession, task: Task, token: str):
     data = {
         "task_id": str(task.id),
         "type": "completion_poll",
-        "title": task.title
+        "title": task.title,
+        "notification_id": f"poll_{task.id}_{int(datetime.now().timestamp())}"
     }
 
     # Using 'TASK_COMPLETION' category which the frontend will handle
@@ -373,7 +374,12 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
                             token=setting.fcm_token,
                             title=f"LARA: {ai_message[:30]}...",
                             body=ai_message,
-                            data={"type": "google_reminder", "google_id": item["id"], "lead": str(minutes)}
+                            data={
+                                "type": "google_reminder", 
+                                "google_id": item["id"], 
+                                "lead": str(minutes),
+                                "notification_id": f"google_{item['id']}_{minutes}"
+                            }
                         )
                         
                         if success:
@@ -467,7 +473,8 @@ async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins
     data = {
         "task_id": str(task.id),
         "type": "completion_poll" if is_nudge else "reminder",
-        "lead_time": str(lead_mins)
+        "lead_time": str(lead_mins),
+        "notification_id": f"{task.id}_{lead_mins}_{int(datetime.now().timestamp())}"  # ✅ Unique ID for deduplication
     }
     
     try:

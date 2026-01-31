@@ -216,7 +216,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
                         id=0, title=event.get('summary', 'Google Event'),
                         description=event.get('description', ''),
                         due_date=dt_utc, type="meeting", raw_text="google_event",
-                        status="completed" if event.get('status') == 'confirmed' else 'pending',
+                        status="pending", # 🟢 Changed from 'completed' to avoid strikeout
                         user_id=user_id,
                         created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                         updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -241,7 +241,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
                 id=0, title=f"[Google] {task_title}",
                 description=g_task.get('notes', ''),
                 due_date=task_due, type="task", raw_text="google_task",
-                status="completed" if g_task.get('status') == 'completed' else 'pending',
+                status="pending", # 🟢 Always start as pending
                 user_id=user_id,
                 created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                 updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)

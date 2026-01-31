@@ -75,32 +75,46 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
 
     try:
         if creds.expired:
-            creds.refresh(Request())
-            user.google_access_token = creds.token
-            db.add(user)
-            await db.commit()
+            try:
+                creds.refresh(Request())
+                user.google_access_token = creds.token
+                db.add(user)
+                await db.commit()
+            except Exception as refresh_err:
+                 # If refreshing with all scopes fails (e.g. invalid_scope), try with just calendar
+                 print(f"⚠️ Refresh failed (likely scope mismatch): {refresh_err}")
+                 if "invalid_scope" in str(refresh_err):
+                     # Downgrade scopes for this request only
+                     creds.scopes = ['https://www.googleapis.com/auth/calendar.events']
+                     creds.refresh(Request())
+                     print("✅ Refresh succeeded with limited scopes.")
 
         # 1. Fetch Calendar Events
-        cal_service = build('calendar', 'v3', credentials=creds)
-        if not time_min:
-            time_min = datetime.datetime.utcnow().isoformat() + 'Z'
-        if not time_max:
-            time_max = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
+        events = []
+        try:
+            cal_service = build('calendar', 'v3', credentials=creds)
+            if not time_min:
+                time_min = datetime.datetime.utcnow().isoformat() + 'Z'
+            if not time_max:
+                time_max = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).isoformat() + 'Z'
 
-        events_result = cal_service.events().list(
-            calendarId='primary', timeMin=time_min, timeMax=time_max, singleEvents=True
-        ).execute()
-        events = events_result.get('items', [])
+            events_result = cal_service.events().list(
+                calendarId='primary', timeMin=time_min, timeMax=time_max, singleEvents=True
+            ).execute()
+            events = events_result.get('items', [])
+        except Exception as ce:
+            print(f"⚠️ Calendar API error: {ce}")
 
         # 2. Fetch Google Tasks
         tasks = []
-        try:
-            tasks_service = build('tasks', 'v1', credentials=creds)
-            # Fetch from the "My Tasks" (default) list
-            tasks_result = tasks_service.tasks().list(tasklist='@default').execute()
-            tasks = tasks_result.get('items', [])
-        except Exception as te:
-            print(f"⚠️ Tasks API error (might need enablement): {te}")
+        # Only try tasks if we likely have the scope
+        if 'https://www.googleapis.com/auth/tasks.readonly' in creds.scopes:
+            try:
+                tasks_service = build('tasks', 'v1', credentials=creds)
+                tasks_result = tasks_service.tasks().list(tasklist='@default').execute()
+                tasks = tasks_result.get('items', [])
+            except Exception as te:
+                print(f"⚠️ Tasks API error (might need re-sync): {te}")
 
         return {"events": events, "tasks": tasks}
         

@@ -33,8 +33,7 @@ async def check_and_send_notifications(db: AsyncSession):
     # 5. Check for Morning/Evening Summaries ☕🌙
     await check_and_send_summaries(db, now)
 
-    # 🚀 ONE SINGLE COMMIT at the end of all checks to prevent greenlet conflicts
-    await db.commit()
+    # Note: Commits are now handled inside the processing functions to minimize race conditions
 
 async def check_and_send_summaries(db: AsyncSession, now_utc: datetime):
     """
@@ -240,9 +239,14 @@ async def clear_stale_token(db: AsyncSession, user_id: int):
 async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
     """Process reminders for a specific lead time (10m or 20m)"""
     
-    # Define range to catch tasks even if scheduler is slightly delayed
-    start_range = now + timedelta(minutes=minutes - 1)
-    end_range = now + timedelta(minutes=minutes + 1)
+    # Define range to catch tasks (Widen 'Due Now' window)
+    if minutes == 0:
+        # Catch anything due in the last 5 minutes that hasn't been notified
+        start_range = now - timedelta(minutes=5)
+        end_range = now + timedelta(minutes=1)
+    else:
+        start_range = now + timedelta(minutes=minutes - 2)
+        end_range = now + timedelta(minutes=minutes + 2)
     
     if minutes == 20:
         notified_col = Task.notified_20m
@@ -270,18 +274,23 @@ async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
     reminders = result.all()
     
     for task, token in reminders:
-        # 🤖 Generate AI message
-        due_time_str = format_local_time(task.due_date)
-        ai_message = await generate_friendly_reminder(task.title, due_time_str, minutes)
-        
-        success = await send_friendly_push(db, task, token, minutes, ai_message)
-        if success:
-            if minutes == 20: task.notified_20m = True
-            elif minutes == 10: task.notified_10m = True
-            else: task.notified_due = True
+        try:
+            # 🤖 Generate AI message
+            due_time_str = format_local_time(task.due_date)
+            ai_message = await generate_friendly_reminder(task.title, due_time_str, minutes)
             
-            db.add(task)
-            print(f"🚀 [AI-FCM] Sent {minutes}m reminder for: {task.title}")
+            success = await send_friendly_push(db, task, token, minutes, ai_message)
+            if success:
+                if minutes == 20: task.notified_20m = True
+                elif minutes == 10: task.notified_10m = True
+                else: task.notified_due = True
+                
+                db.add(task)
+                # ⚡ Commit immediately to prevent double-sends (race condition)
+                await db.commit()
+                print(f"🚀 [AI-FCM] Sent {minutes}m reminder for: {task.title}")
+        except Exception as e:
+            logger.error(f"❌ Failed to process local reminder for task {task.id}: {e}")
 
 async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int):
     """Fetch and process reminders for Google Calendar/Tasks"""
@@ -343,6 +352,20 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
                         due_time_str = format_local_time(item_time)
                         ai_message = await generate_friendly_reminder(item["title"], due_time_str, minutes)
 
+                        # ⚡ Optimistic Locking: Record it FIRST to block other workers
+                        # We record even before sending. If sending fails, we at least don't double send.
+                        # (Ideally we'd handle retry, but preventing spam is higher priority for user)
+                        try:
+                            await record_notification(
+                                db, user.id, "Google Reminder", ai_message, 
+                                {"type": "google_reminder", "google_id": item["id"], "lead": str(minutes), "google_notif_key": notif_key}
+                            )
+                            await db.commit()
+                        except Exception as db_err:
+                            # If commit fails (e.g. unique constraint race), skip sending
+                            logger.warning(f"⏩ Skipping {item['title']} (likely already processed): {db_err}")
+                            continue
+
                         # Send Push
                         success = await fcm_manager.send_notification(
                             token=setting.fcm_token,
@@ -352,11 +375,6 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
                         )
                         
                         if success:
-                            # Record so we don't repeat
-                            await record_notification(
-                                db, user.id, "Google Reminder", ai_message, 
-                                {"type": "google_reminder", "google_notif_key": notif_key}
-                            )
                             print(f"🚀 [AI-Google] Sent {minutes}m reminder for: {item['title']}")
                 except Exception as e:
                     logger.error(f"Error processing Google item: {e}")
@@ -429,7 +447,8 @@ async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins
     """Send a human-friendly FCM notification with natural language"""
     
     if ai_message:
-        title_text = "LARA Update ✨" # Simple title, AI handles body
+        # Use the actual task title so the user knows context immediately
+        title_text = f"{task.title} 🔔" if task.title else "LARA Reminder 🔔"
         body_text = ai_message
     else:
         # Fallback to old logic if AI fails

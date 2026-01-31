@@ -163,7 +163,9 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         Task.user_id == user_id,
         or_(
             and_(Task.due_date >= query_start, Task.due_date <= query_end),
-            and_(Task.due_date < dt_utc_start, Task.status == "pending")
+            and_(Task.due_date < dt_utc_start, Task.status == "pending"),
+            # 🔥 NEW: Include tasks completed today even if due in the past
+            and_(Task.updated_at >= dt_utc_start, Task.updated_at <= dt_utc_end, Task.status == "completed")
         )
     ).order_by(Task.due_date)
     
@@ -184,11 +186,23 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             t_utc = t_utc.replace(tzinfo=timezone.utc)
             
         t_ist = t_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+
+        # Convert update time to IST for "completed today" check
+        upd_utc = t.updated_at
+        if upd_utc.tzinfo is None:
+            upd_utc = upd_utc.replace(tzinfo=timezone.utc)
+        upd_ist = upd_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
         
         if t_ist.date() == target_date:
             today_tasks.append(t)
-        elif t_ist.date() < target_date and t.status == "pending":
-            overdue_tasks.append(t)
+        elif t_ist.date() < target_date:
+            if t.status == "pending":
+                overdue_tasks.append(t)
+            elif upd_ist.date() == target_date:
+                # 🚀 It was due in the past but completed today! 
+                # Keep it in overdue section (it will show as completed/struck out)
+                # This satisfies "completed tasks should disappear only next day"
+                overdue_tasks.append(t)
 
     # Combined tasks for summary calculation
     tasks = today_tasks # We'll still call the today ones 'tasks' for legacy reasons in the response
@@ -246,9 +260,23 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
         # 2. Merge Google Tasks
         google_tasks = google_data.get("tasks", [])
         for g_task in google_tasks:
-            # 🛡️ Skip deleted or hidden tasks
+            # 🛡️ Skip deleted or hidden tasks (Handles deletion sync)
             if g_task.get('deleted') or g_task.get('hidden'):
                 continue
+
+            # 🛡️ Stay for Today logic: Skip only if completed on a previous day
+            if g_task.get('status') == 'completed':
+                comp_str = g_task.get('completed')
+                if comp_str:
+                    try:
+                        from dateutil import parser
+                        c_utc = parser.parse(comp_str)
+                        if c_utc.tzinfo is None: c_utc = c_utc.replace(tzinfo=timezone.utc)
+                        c_ist = c_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                        if c_ist.date() != target_date:
+                            continue # Hide if completed yesterday or earlier
+                    except:
+                        pass # If parse fails, err on side of showing it
 
             # Google Tasks often don't have a specific time, just a date ('due')
             due_str = g_task.get('due')
@@ -264,7 +292,7 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
                 id=0, title=f"[Google] {task_title}",
                 description=g_task.get('notes', ''),
                 due_date=task_due, type="task", raw_text="google_task",
-                status="completed" if g_task.get('status') == 'completed' else "pending",
+                status=g_task.get('status', 'pending'),
                 user_id=user_id,
                 created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                 updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)

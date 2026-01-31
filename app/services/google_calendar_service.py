@@ -9,22 +9,6 @@ from app.core.config import settings
 # Path to the credentials file you uploaded
 CLIENT_SECRET_FILE = "client_secret.json"
 
-async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
-    """
-    Exchange authorization code for access and refresh tokens.
-    """
-    # Use config from env instead of file to avoid project mismatches
-    client_config = {
-        "web": {
-            "client_id": settings.GOOGLE_CLIENT_ID,
-            "client_secret": settings.GOOGLE_CLIENT_SECRET,
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-        }
-    }
-
-    flow = Flow.from_client_config(
-        client_config,
 # Single source of truth for scopes
 SCOPES = [
     'openid',

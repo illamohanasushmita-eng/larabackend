@@ -15,14 +15,43 @@ async def create_task(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return await task_service.create_new_task(db, task, current_user.id)
+    try:
+        return await task_service.create_new_task(db, task, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/process-voice", response_model=VoiceProcessResponse)
 async def process_voice(
     request: VoiceProcessRequest,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return await ai_service.process_voice_command(request.text, request.current_time)
+    res = await ai_service.process_voice_command(request.text, request.current_time)
+    
+    # 🎯 Overlap Check for Voice Command
+    if res.get("status") == "ready" and res.get("time"):
+        from dateutil import parser
+        try:
+            start_t = parser.parse(res["time"])
+            end_t = parser.parse(res["end_time"]) if res.get("end_time") else None
+            
+            conflict = await task_service.check_time_overlap(db, current_user.id, start_t, end_t)
+            if conflict:
+                from datetime import timedelta
+                ist_time = conflict.due_date + timedelta(hours=5, minutes=30)
+                time_str = ist_time.strftime("%I:%M %p")
+                
+                # Update message to warn user
+                conflict_msg = f"Wait, you already have a {conflict.type} at {time_str} ('{conflict.title}'). Would you like to choose another slot?"
+                res["message"] = conflict_msg
+                # Optionally, we can set status back to incomplete so the UI continues listening for a new time
+                # but for now let's just warn and let user decide if they want to force it or click cancel.
+                # Actually user said "dont add overlap tasks".
+                res["status"] = "incomplete" 
+        except Exception as e:
+            print(f"Overlap check error: {e}")
+
+    return res
 
 
 @router.get("/", response_model=List[TaskResponse])

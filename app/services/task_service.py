@@ -1,7 +1,56 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_
 from app.models.task import Task
 from app.schemas.task import TaskCreate, TaskUpdate
+from datetime import datetime, timedelta, timezone
+
+async def check_time_overlap(db: AsyncSession, user_id: int, start_time: datetime, end_time: datetime = None):
+    """
+    Checks if there's an existing pending task/meeting that overlaps with the given time.
+    """
+    if not start_time:
+        return None
+
+    # Use a default 30-min duration for tasks without an end_time for overlap checking
+    if not end_time:
+        end_time = start_time + timedelta(minutes=30)
+    
+    # Window for query (day of start_time)
+    day_start = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=start_time.tzinfo)
+    day_end = datetime.combine(start_time.date(), datetime.max.time()).replace(tzinfo=start_time.tzinfo)
+
+    # Fetch pending tasks for that day
+    query = select(Task).filter(
+        Task.user_id == user_id,
+        Task.status == "pending",
+        Task.due_date >= (day_start - timedelta(days=1)), # Wider window for TZ safety
+        Task.due_date <= (day_end + timedelta(days=1))
+    )
+    result = await db.execute(query)
+    tasks = result.scalars().all()
+
+    for t in tasks:
+        if not t.due_date:
+            continue
+            
+        t_start = t.due_date
+        if t_start.tzinfo is None:
+            t_start = t_start.replace(tzinfo=timezone.utc)
+            
+        # Determine end time for existing task
+        t_end = t.end_time
+        if not t_end:
+            # Assume 30 mins for tasks/reminders, 1 hour for meetings
+            duration = 60 if t.type == "meeting" else 30
+            t_end = t_start + timedelta(minutes=duration)
+        elif t_end.tzinfo is None:
+            t_end = t_end.replace(tzinfo=timezone.utc)
+
+        # Overlap check: (StartA < EndB) and (EndA > StartB)
+        if start_time < t_end and end_time > t_start:
+            return t
+            
+    return None
 
 async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
     import logging
@@ -48,6 +97,13 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
         if safe_type not in ["task", "reminder", "meeting"]:
             safe_type = "task"
             
+        # 🛡️ Overlap Check
+        conflict = await check_time_overlap(db, user_id, normalized_due_date, normalized_end_time)
+        if conflict:
+            logger.warning(f"⚠️ Overlap detected with task: {conflict.title}")
+            # The user strictly requested "dont add overlap tasks"
+            raise ValueError(f"Conflict: You already have a {conflict.type} at this time: '{conflict.title}'")
+
         db_task = Task(
             title=task.title,
             raw_text=task.raw_text,

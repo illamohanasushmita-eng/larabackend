@@ -27,7 +27,10 @@ async def check_and_send_notifications(db: AsyncSession):
         await process_reminders(db, now, minutes=mins)
         await process_google_reminders(db, now, minutes=mins)
 
-    # 4. Check for completion feedback (tasks due in the past 5-10 mins, still pending)
+    # 4. Check for meeting end times to restore sound 🌅
+    await process_meeting_restoration(db, now)
+
+    # 5. Check for completion feedback (tasks due in the past 5-10 mins, still pending)
     await check_task_completion_reminders(db, now)
 
     # 5. Check for Morning/Evening Summaries ☕🌙
@@ -319,6 +322,56 @@ async def process_reminders(db: AsyncSession, now: datetime, minutes: int):
         except Exception as e:
             logger.error(f"❌ Failed to process local reminder for task {task.id}: {e}")
 
+async def process_meeting_restoration(db: AsyncSession, now: datetime):
+    """
+    Check for meetings that have just ended and send a deactivation push
+    to restore normal sound settings on the device.
+    """
+    # Look for meetings that ended in the last 5 minutes but haven't been notified of end
+    start_range = now - timedelta(minutes=5)
+    
+    query = select(Task, UserSetting.fcm_token).join(
+        UserSetting, Task.user_id == UserSetting.user_id
+    ).filter(
+        and_(
+            Task.end_time != None,
+            Task.end_time <= now,
+            Task.end_time >= start_range,
+            Task.notified_end == False,
+            UserSetting.push_enabled == True,
+            UserSetting.fcm_token != None
+        )
+    )
+    
+    result = await db.execute(query)
+    ended_meetings = result.all()
+    
+    for task, token in ended_meetings:
+        try:
+            # Send silent deactivation push
+            data = {
+                "task_id": str(task.id),
+                "type": "focus_restore",
+                "toggle_focus": "false",
+                "notification_id": f"end_{task.id}_{int(now.timestamp())}"
+            }
+            
+            # Use data-only send to avoid showing a banner
+            success = await fcm_manager.send_notification(
+                token=token,
+                title="Focus Mode 🌅", # Title is required by my guard, but body can be short
+                body=f"Meeting '{task.title}' ended. Sound restored.",
+                data=data
+            )
+            
+            if success:
+                task.notified_end = True
+                db.add(task)
+                await db.commit()
+                print(f"🌅 [FocusMode] Sent deactivation signal for: {task.title}")
+        except Exception as e:
+            logger.error(f"❌ Failed to process meeting restoration for task {task.id}: {e}")
+
 async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int):
     """Fetch and process reminders for Google Calendar/Tasks"""
     # Find users who are synced
@@ -500,11 +553,23 @@ async def send_friendly_push(db: AsyncSession, task: Task, token: str, lead_mins
     is_nudge = lead_mins == -1
     is_due = lead_mins == 0
     
+    # 🎯 SMART FOCUS TRIGGER: If this is a meeting/timed task due NOW (0m), 
+    # tell the frontend to turn on DND even if in background.
+    should_toggle_focus = False
+    if lead_mins == 0:
+        # Check task type or keywords
+        import re
+        is_meeting = task.type == 'meeting' or \
+                     re.search(r'meeting|study|business|project|interview|sync|call|discussion', task.title.lower())
+        if is_meeting:
+            should_toggle_focus = True
+
     data = {
         "task_id": str(task.id),
         "type": "completion_poll" if is_nudge else "reminder",
         "lead_time": str(lead_mins),
-        "notification_id": f"{task.id}_{lead_mins}_{int(datetime.now().timestamp())}"  # ✅ Unique ID for deduplication
+        "notification_id": f"{task.id}_{lead_mins}_{int(datetime.now().timestamp())}",
+        "toggle_focus": "true" if should_toggle_focus else "false"
     }
     
     try:

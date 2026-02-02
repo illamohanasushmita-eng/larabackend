@@ -18,6 +18,7 @@ class Task(Base):
     notified_10m = Column(Boolean, default=False)
     notified_20m = Column(Boolean, default=False)
     notified_due = Column(Boolean, default=False)
+    notified_end = Column(Boolean, default=False)
     notified_completion = Column(Boolean, default=False)
     notified_30m_post = Column(Boolean, default=False)
     last_nudged_at = Column(DateTime(timezone=True), nullable=True) # Last time user was nudged

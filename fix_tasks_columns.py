@@ -35,6 +35,7 @@ async def fix_missing_columns():
                 ("notified_10m", "BOOLEAN DEFAULT FALSE"),
                 ("notified_20m", "BOOLEAN DEFAULT FALSE"),
                 ("notified_due", "BOOLEAN DEFAULT FALSE"),
+                ("notified_end", "BOOLEAN DEFAULT FALSE"),
                 ("notified_completion", "BOOLEAN DEFAULT FALSE"),
                 ("notified_30m_post", "BOOLEAN DEFAULT FALSE"),
                 ("last_nudged_at", "TIMESTAMP WITH TIME ZONE"),

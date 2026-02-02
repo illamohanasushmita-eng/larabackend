@@ -8,6 +8,7 @@ class TaskBase(BaseModel):
     description: Optional[str] = None
     type: Optional[str] = "task"
     due_date: Optional[datetime] = None
+    end_time: Optional[datetime] = None
     med_timing: Optional[str] = None
 
     @field_validator('title')
@@ -31,7 +32,9 @@ class TaskUpdate(BaseModel):
     status: Optional[str] = None
     type: Optional[str] = None
     due_date: Optional[datetime] = None
+    end_time: Optional[datetime] = None
     med_timing: Optional[str] = None
+    external_id: Optional[str] = None
 
 class TaskResponse(TaskBase):
     id: int
@@ -39,6 +42,8 @@ class TaskResponse(TaskBase):
     type: str
     created_at: datetime
     updated_at: datetime
+    external_id: Optional[str] = None
+    is_external: bool = False
     
     @property
     def is_completed(self) -> bool:
@@ -74,6 +79,7 @@ class VoiceProcessResponse(BaseModel):
     title: str = "New Task"
     corrected_sentence: str
     time: Optional[str] = None
+    end_time: Optional[str] = None
     type: str = "task"
     message: str
     is_cancelled: bool = False

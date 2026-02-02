@@ -15,7 +15,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/userinfo.profile',
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/calendar.events',
-    'https://www.googleapis.com/auth/tasks.readonly'
+    'https://www.googleapis.com/auth/tasks'
 ]
 
 async def exchange_code_for_tokens(db: AsyncSession, user: User, code: str):
@@ -130,7 +130,10 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
                 # 2. Fetch tasks from each list
                 for tl in tasklists:
                     t_res = tasks_service.tasks().list(tasklist=tl['id']).execute()
-                    tasks.extend(t_res.get('items', []))
+                    list_tasks = t_res.get('items', [])
+                    for lt in list_tasks:
+                        lt['_list_id'] = tl['id']
+                    tasks.extend(list_tasks)
                     
             except Exception as te:
                 if "403" in str(te) or "401" in str(te):
@@ -143,3 +146,46 @@ async def get_google_data(user: User, db: AsyncSession, time_min: str = None, ti
     except Exception as e:
         print(f"❌ Google API Error: {e}")
         return {"events": [], "tasks": []}
+
+async def patch_google_task_status(user: User, db: AsyncSession, composite_id: str, new_status: str):
+    """
+    Updates status of a Google Task.
+    composite_id format: tasklist_id|task_id
+    new_status: 'completed' or 'needsAction'
+    """
+    if not user.google_refresh_token or '|' not in composite_id:
+        return False
+
+    import google.oauth2.credentials
+    from google.auth.transport.requests import Request
+    
+    list_id, task_id = composite_id.split('|', 1)
+
+    creds = google.oauth2.credentials.Credentials(
+        token=user.google_access_token,
+        refresh_token=user.google_refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET
+    )
+
+    try:
+        if creds.expired:
+            creds.refresh(Request())
+            user.google_access_token = creds.token
+            db.add(user)
+            await db.commit()
+
+        tasks_service = build('tasks', 'v1', credentials=creds)
+        
+        # Patch the task. 
+        tasks_service.tasks().patch(
+            tasklist=list_id,
+            task=task_id,
+            body={'status': new_status}
+        ).execute()
+        
+        return True
+    except Exception as e:
+        print(f"❌ Error patching Google Task: {e}")
+        return False

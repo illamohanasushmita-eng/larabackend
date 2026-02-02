@@ -198,8 +198,9 @@ CORE MISSION:
      - "me" -> "you"
    - **PROFESSIONAL PHRASING**: Ensure the output sounds like a professional assistant wrote it.
 
-2. EXTRACTION: Identify the 'title' and 'time' (ISO 8601).
+2. EXTRACTION: Identify the 'title', 'time' (ISO 8601 start time), and 'end_time' (ISO 8601 if provided).
    - **FUTURE TIME ONLY**: Your extracted time MUST always be in the future relative to the Current Local Time. If the user specifies a time that has already passed today, automatically move the date to tomorrow.
+   - **MEETINGS/DURATION**: If the user mentions a meeting with a start and end time (e.g. "2 to 3 PM", "from 10 AM for 1 hour"), extract BOTH 'time' and 'end_time'.
 
 Return ONLY a JSON object based on these examples:
 
@@ -210,27 +211,30 @@ Output: {{
   "title": "Call Mom",
   "corrected_sentence": "You have a reminder to call your mom tomorrow at 5:00 AM.",
   "time": "2026-01-29T05:00:00",
+  "end_time": null,
   "type": "reminder",
   "message": "Got it. I've set a reminder to call your mom for tomorrow morning at 5 AM."
 }}
 
 Example 2:
-Input: "add task to mee my friends tomorrow"
+Input: "meeting with boss today from 2 PM to 3:30 PM"
 Output: {{
-  "status": "incomplete",
-  "title": "Meet Friends",
-  "corrected_sentence": "Meet your friends.",
-  "time": null,
+  "status": "ready",
+  "title": "Meeting with Boss",
+  "corrected_sentence": "You have a meeting with your boss today from 2:00 PM to 3:30 PM.",
+  "time": "2026-01-28T14:00:00",
+  "end_time": "2026-01-28T15:30:00",
   "type": "task",
-  "message": "Sure. At what time tomorrow should I set this for you?"
+  "message": "Alright. I've scheduled your meeting with your boss from 2:00 PM to 3:30 PM today."
 }}
 
 Return ONLY a JSON object:
 {{
   "status": "ready" | "incomplete",
-  "title": "Clean Short Title (e.g. Call Mom)",
+  "title": "Clean Short Title",
   "corrected_sentence": "Full polished sentence in 2nd person",
   "time": "ISO 8601 string or null",
+  "end_time": "ISO 8601 string or null",
   "type": "task" or "reminder",
   "message": "Spoken assistant response"
 }}"""
@@ -267,6 +271,7 @@ Return ONLY a JSON object:
             "title": title,
             "corrected_sentence": corrected,
             "time": result.get("time"),
+            "end_time": result.get("end_time"),
             "type": str(result.get("type", "task")),
             "message": str(result.get("message", "Processing...")),
             "is_cancelled": False

@@ -21,6 +21,8 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
         # If we treat naive as UTC, a 9 PM task becomes 9 PM UTC = 2:30 AM IST (Next Day), causing it to disappear from 'Today'.
         
         normalized_due_date = task.due_date
+        normalized_end_time = task.end_time
+        
         if normalized_due_date:
             if normalized_due_date.tzinfo is not None:
                 # Keep original timezone (likely IST from UI/AI)
@@ -33,6 +35,14 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
                 
             logger.info(f"🔄 Storing due_date (Aware IST/Input): {normalized_due_date}")
 
+        if normalized_end_time:
+            if normalized_end_time.tzinfo is not None:
+                pass
+            else:
+                ist_tz = timezone(timedelta(hours=5, minutes=30))
+                normalized_end_time = normalized_end_time.replace(tzinfo=ist_tz)
+            logger.info(f"🔄 Storing end_time (Aware IST/Input): {normalized_end_time}")
+
         # Normalize Type and Status
         safe_type = task.type.lower() if task.type else "task"
         if safe_type not in ["task", "reminder", "meeting"]:
@@ -43,6 +53,7 @@ async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
             raw_text=task.raw_text,
             description=task.description,
             due_date=normalized_due_date,
+            end_time=normalized_end_time,
             type=safe_type,
             status="pending", # Force default status
             user_id=user_id
@@ -67,11 +78,30 @@ async def get_task(db: AsyncSession, task_id: int, user_id: int):
     return result.scalars().first()
 
 async def update_task_status(db: AsyncSession, task_id: int, task_update: TaskUpdate, user_id: int):
+    # 🚀 NEW: Handle External (Google) tasks
+    if task_id == 0 and task_update.external_id:
+        from app.services.google_calendar_service import patch_google_task_status
+        from app.models.user import User
+        
+        user_res = await db.execute(select(User).where(User.id == user_id))
+        user = user_res.scalar_one_or_none()
+        
+        if user and task_update.status:
+            success = await patch_google_task_status(user, db, task_update.external_id, task_update.status)
+            if success:
+                # Return a dummy task object to match response model
+                return Task(id=0, status=task_update.status, title="Google Sync", external_id=task_update.external_id)
+        return None
+
     db_task = await get_task(db, task_id, user_id)
     if not db_task:
         return None
     
     update_data = task_update.dict(exclude_unset=True)
+    # Don't try to save external_id to local DB if it's not a synced record yet
+    if 'external_id' in update_data:
+        del update_data['external_id']
+
     for key, value in update_data.items():
         setattr(db_task, key, value)
         
@@ -249,7 +279,9 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
                         id=0, title=event.get('summary', 'Google Event'),
                         description=event.get('description', ''),
                         due_date=dt_utc, type="meeting", raw_text="google_event",
-                        status="pending", # 🟢 Changed from 'completed' to avoid strikeout
+                        status="pending",
+                        external_id=event.get('id'),
+                        is_external=True,
                         user_id=user_id,
                         created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                         updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -264,39 +296,77 @@ async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
             if g_task.get('deleted') or g_task.get('hidden'):
                 continue
 
-            # 🛡️ Stay for Today logic: Skip only if completed on a previous day
-            if g_task.get('status') == 'completed':
-                comp_str = g_task.get('completed')
-                if comp_str:
-                    try:
-                        from dateutil import parser
-                        c_utc = parser.parse(comp_str)
-                        if c_utc.tzinfo is None: c_utc = c_utc.replace(tzinfo=timezone.utc)
-                        c_ist = c_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
-                        if c_ist.date() != target_date:
-                            continue # Hide if completed yesterday or earlier
-                    except:
-                        pass # If parse fails, err on side of showing it
-
-            # Google Tasks often don't have a specific time, just a date ('due')
+            # Parse Due Date
             due_str = g_task.get('due')
-            task_title = g_task.get('title', 'Google Task')
-            
-            # Treat it as an all-day/unscheduled task if no due date
             task_due = None
+            task_due_date_only = None
             if due_str:
                 from dateutil import parser
-                task_due = parser.parse(due_str).replace(tzinfo=timezone.utc)
+                try:
+                    task_due = parser.parse(due_str).replace(tzinfo=timezone.utc)
+                    task_due_date_only = task_due.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
+                except:
+                    pass
 
-            tasks.append(Task(
-                id=0, title=f"[Google] {task_title}",
+            # Parse Completion Date
+            comp_str = g_task.get('completed')
+            completed_date_only = None
+            if comp_str:
+                try:
+                    from dateutil import parser
+                    c_utc = parser.parse(comp_str)
+                    if c_utc.tzinfo is None: c_utc = c_utc.replace(tzinfo=timezone.utc)
+                    completed_date_only = c_utc.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
+                except:
+                    pass
+
+            status = g_task.get('status', 'pending')
+            
+            # 🚀 Visibility Logic: "Stay for Today"
+            should_show = False
+            is_overdue = False
+            
+            # 1. Due today (Pending or Completed)
+            if task_due_date_only == target_date:
+                should_show = True
+            
+            # 2. Overdue and Pending (Show in Overdue section)
+            elif task_due_date_only and task_due_date_only < target_date and status != 'completed':
+                should_show = True
+                is_overdue = True
+            
+            # 3. Completed Today (Even if it was due in the past or has no due date)
+            elif completed_date_only == target_date:
+                should_show = True
+                if task_due_date_only and task_due_date_only < target_date:
+                    is_overdue = True
+
+            if not should_show:
+                continue
+
+            # Construct the Task object
+            # Combine List ID and Task ID for completion logic
+            list_id = g_task.get('_list_id', '@default')
+            g_id = g_task.get('id')
+            composed_id = f"{list_id}|{g_id}"
+
+            new_task = Task(
+                id=0, title=f"[Google] {g_task.get('title', 'Google Task')}",
                 description=g_task.get('notes', ''),
                 due_date=task_due, type="task", raw_text="google_task",
-                status=g_task.get('status', 'pending'),
+                status=status,
+                external_id=composed_id,
+                is_external=True,
                 user_id=user_id,
                 created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
                 updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
-            ))
+            )
+
+            # Route to correct bucket
+            if is_overdue:
+                overdue_tasks.append(new_task)
+            else:
+                tasks.append(new_task)
 
     except Exception as e:
         logger.error(f"❌ Failed to merge Google data into plan: {e}")

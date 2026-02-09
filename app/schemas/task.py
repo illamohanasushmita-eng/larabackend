@@ -76,6 +76,7 @@ class VoiceProcessRequest(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
 
+
 class VoiceProcessResponse(BaseModel):
     status: str # "idle", "incomplete", "ready", "error"
     title: str = "New Task"

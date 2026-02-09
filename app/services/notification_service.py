@@ -461,7 +461,6 @@ async def process_google_reminders(db: AsyncSession, now: datetime, minutes: int
                             has_casual = re.search(r'friends|family', title_lower)
                             if has_prof and not has_casual:
                                 should_toggle_focus = True
-
                         # Send Push
                         success = await fcm_manager.send_notification(
                             token=setting.fcm_token,

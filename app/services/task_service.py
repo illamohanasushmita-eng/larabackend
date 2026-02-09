@@ -1,0 +1,634 @@
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, or_
+from app.models.task import Task
+from app.schemas.task import TaskCreate, TaskUpdate
+from datetime import datetime, timedelta, timezone
+
+async def check_time_overlap(db: AsyncSession, user_id: int, start_time: datetime, end_time: datetime = None):
+    """
+    Checks if there's an existing pending task/meeting that overlaps with the given time.
+    """
+    if not start_time:
+        return None
+
+    # Use a default 30-min duration for tasks without an end_time for overlap checking
+    if not end_time:
+        end_time = start_time + timedelta(minutes=30)
+    
+    # Window for query (day of start_time)
+    day_start = datetime.combine(start_time.date(), datetime.min.time()).replace(tzinfo=start_time.tzinfo)
+    day_end = datetime.combine(start_time.date(), datetime.max.time()).replace(tzinfo=start_time.tzinfo)
+
+    # Fetch pending tasks for that day
+    query = select(Task).filter(
+        Task.user_id == user_id,
+        Task.status == "pending",
+        Task.due_date >= (day_start - timedelta(days=1)), # Wider window for TZ safety
+        Task.due_date <= (day_end + timedelta(days=1))
+    )
+    result = await db.execute(query)
+    tasks = result.scalars().all()
+
+    for t in tasks:
+        if not t.due_date:
+            continue
+            
+        t_start = t.due_date
+        if t_start.tzinfo is None:
+            t_start = t_start.replace(tzinfo=timezone.utc)
+            
+        # Determine end time for existing task
+        t_end = t.end_time
+        if not t_end:
+            # Assume 30 mins for tasks/reminders, 1 hour for meetings
+            duration = 60 if t.type == "meeting" else 30
+            t_end = t_start + timedelta(minutes=duration)
+        elif t_end.tzinfo is None:
+            t_end = t_end.replace(tzinfo=timezone.utc)
+
+        # Overlap check: (StartA < EndB) and (EndA > StartB)
+        if start_time < t_end and end_time > t_start:
+            return t
+            
+    return None
+
+async def create_new_task(db: AsyncSession, task: TaskCreate, user_id: int):
+    import logging
+    from datetime import timezone, timedelta
+    
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"📝 Creating task for user {user_id}")
+    logger.info(f"   Title: {task.title}")
+    logger.info(f"   Due Date: {task.due_date}")
+    logger.info(f"   Type: {task.type}")
+    
+    try:
+        # 🕒 Timezone Normalization Fix
+        # If the task has a due_date, ensure it's converted to UTC before saving.
+        # FIX: Treat Naive as IST because users are likely sending local time from an app acting in IST
+        # If we treat naive as UTC, a 9 PM task becomes 9 PM UTC = 2:30 AM IST (Next Day), causing it to disappear from 'Today'.
+        
+        normalized_due_date = task.due_date
+        normalized_end_time = task.end_time
+        
+        if normalized_due_date:
+            if normalized_due_date.tzinfo is not None:
+                # Keep original timezone (likely IST from UI/AI)
+                pass
+            else:
+                # Treat Naive as IST (Asia/Kolkata)
+                ist_tz = timezone(timedelta(hours=5, minutes=30))
+                # Localize as IST
+                normalized_due_date = normalized_due_date.replace(tzinfo=ist_tz)
+                
+            logger.info(f"🔄 Storing due_date (Aware IST/Input): {normalized_due_date}")
+
+        if normalized_end_time:
+            if normalized_end_time.tzinfo is not None:
+                pass
+            else:
+                ist_tz = timezone(timedelta(hours=5, minutes=30))
+                normalized_end_time = normalized_end_time.replace(tzinfo=ist_tz)
+            logger.info(f"🔄 Storing end_time (Aware IST/Input): {normalized_end_time}")
+
+        # Normalize Type and Status
+        safe_type = task.type.lower() if task.type else "task"
+        if safe_type not in ["task", "reminder", "meeting"]:
+            safe_type = "task"
+            
+        # 🛡️ Overlap Check
+        conflict = await check_time_overlap(db, user_id, normalized_due_date, normalized_end_time)
+        if conflict:
+            logger.warning(f"⚠️ Overlap detected with task: {conflict.title}")
+            # The user strictly requested "dont add overlap tasks"
+            raise ValueError(f"Conflict: You already have a {conflict.type} at this time: '{conflict.title}'")
+
+        db_task = Task(
+            title=task.title,
+            raw_text=task.raw_text,
+            description=task.description,
+            due_date=normalized_due_date,
+            end_time=normalized_end_time,
+            type=safe_type,
+            status="pending", # Force default status
+            user_id=user_id
+        )
+        db.add(db_task)
+        await db.commit()
+        await db.refresh(db_task)
+        
+        logger.info(f"✅ Task created successfully! ID: {db_task.id}")
+        return db_task
+    except Exception as e:
+        logger.error(f"❌ Failed to create task: {e}")
+        await db.rollback()
+        raise
+
+async def get_tasks(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
+    result = await db.execute(select(Task).filter(Task.user_id == user_id).offset(skip).limit(limit))
+    return result.scalars().all()
+
+async def get_task(db: AsyncSession, task_id: int, user_id: int):
+    result = await db.execute(select(Task).filter(Task.id == task_id, Task.user_id == user_id))
+    return result.scalars().first()
+
+async def update_task_status(db: AsyncSession, task_id: int, task_update: TaskUpdate, user_id: int):
+    # 🚀 NEW: Handle External (Google) tasks
+    if task_id == 0 and task_update.external_id:
+        from app.services.google_calendar_service import patch_google_task_status
+        from app.models.user import User
+        
+        user_res = await db.execute(select(User).where(User.id == user_id))
+        user = user_res.scalar_one_or_none()
+        
+        if user and task_update.status:
+            success = await patch_google_task_status(user, db, task_update.external_id, task_update.status)
+            if success:
+                # Return a dummy task object to match response model
+                return Task(id=0, status=task_update.status, title="Google Sync", external_id=task_update.external_id)
+        return None
+
+    db_task = await get_task(db, task_id, user_id)
+    if not db_task:
+        return None
+    
+    update_data = task_update.dict(exclude_unset=True)
+    # Don't try to save external_id to local DB if it's not a synced record yet
+    if 'external_id' in update_data:
+        del update_data['external_id']
+
+    for key, value in update_data.items():
+        setattr(db_task, key, value)
+        
+    db.add(db_task)
+    await db.commit()
+    await db.refresh(db_task)
+    return db_task
+
+async def postpone_task_reminder(db: AsyncSession, task_id: int, user_id: int):
+    """Update last_nudged_at to postpone reminder for 30 minutes"""
+    from datetime import datetime, timezone
+    db_task = await get_task(db, task_id, user_id)
+    if not db_task:
+        return None
+    
+    # Update last_nudged_at to now, so backend waits another 30 min
+    db_task.last_nudged_at = datetime.now(timezone.utc)
+    db.add(db_task)
+    await db.commit()
+    await db.refresh(db_task)
+    print(f"⏳ [Postpone] Task {task_id} postponed for 30 minutes")
+    return db_task
+
+async def get_daily_plan(db: AsyncSession, user_id: int, date_str: str = None):
+    from datetime import date, datetime, time
+    import random
+    from app.models.user import User
+    
+    # Fetch user for name
+    user_res = await db.execute(select(User).filter(User.id == user_id))
+    user = user_res.scalar_one_or_none()
+    user_name = user.full_name if user else "Friend"
+    
+    # Determine Greeting based on current time
+    # Determine Greeting based on current time
+    # ✅ Fix: Railway server is UTC, so we add 5:30 for IST (User's timezone)
+    from datetime import timedelta, timezone
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Use explicit UTC now to avoid local system time ambiguity
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    now_hour = now_ist.hour
+    
+    if 5 <= now_hour < 12:
+        greeting_time = "Good Morning"
+    elif 12 <= now_hour < 17:
+        greeting_time = "Good Afternoon"
+    elif 17 <= now_hour < 21:
+        greeting_time = "Good Evening"
+    else:
+        greeting_time = "Good Night"
+
+    # ✅ CRITICAL FIX: Use IST date, not server UTC date
+    # If date_str is provided, use it. Otherwise, use TODAY in IST.
+    if date_str:
+        target_date = date.fromisoformat(date_str)
+    else:
+        # Server is in UTC, but user expects "today" in IST
+        target_date = now_ist.date()
+    
+    logger.info(f"📅 [get_daily_plan] Target date: {target_date} (IST)")
+    
+    # 🌍 Fix: Handle Timezone properly.
+    # Postgres stores UTC. We construct Aware UTC ranges to query.
+    # from datetime import timezone # already imported
+    
+    # 1. Create 00:00 IST on target date (naive)
+    dt_ist_start = datetime.combine(target_date, time.min) # 00:00:00
+    dt_ist_end = datetime.combine(target_date, time.max)   # 23:59:59.999
+    
+    # 2. Convert IST target range to Aware UTC range
+    # IST = UTC + 5:30. To get UTC, we subtract 5:30 and tag as UTC.
+    dt_utc_start = (dt_ist_start - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    dt_utc_end = (dt_ist_end - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    
+    logger.info(f"🔍 [get_daily_plan] IST window: {dt_ist_start} to {dt_ist_end}")
+    logger.info(f"🔍 [get_daily_plan] UTC window (Aware): {dt_utc_start} to {dt_utc_end}")
+    
+    # Fetch tasks with a wider buffer (±1 Day) to ensure we catch everything despite timezone shifts
+    # Then filter strictly in Python
+    buffer = timedelta(days=1)
+    query_start = dt_utc_start - buffer
+    query_end = dt_utc_end + buffer
+    
+    from sqlalchemy import or_, and_
+    query = select(Task).filter(
+        Task.user_id == user_id,
+        or_(
+            and_(Task.due_date >= query_start, Task.due_date <= query_end),
+            and_(Task.due_date < dt_utc_start, Task.status == "pending"),
+            # 🔥 NEW: Include tasks completed today even if due in the past
+            and_(Task.updated_at >= dt_utc_start, Task.updated_at <= dt_utc_end, Task.status == "completed")
+        )
+    ).order_by(Task.due_date)
+    
+    result = await db.execute(query)
+    all_potential_tasks = result.scalars().all()
+    
+    # Strict Python Filter for "Today" in IST
+    today_tasks = []
+    overdue_tasks = []
+    
+    for t in all_potential_tasks:
+        if not t.due_date:
+            continue
+            
+        # Convert DB time to IST
+        t_utc = t.due_date
+        if t_utc.tzinfo is None:
+            t_utc = t_utc.replace(tzinfo=timezone.utc)
+            
+        t_ist = t_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+
+        # Convert update time to IST for "completed today" check
+        upd_utc = t.updated_at
+        if upd_utc.tzinfo is None:
+            upd_utc = upd_utc.replace(tzinfo=timezone.utc)
+        upd_ist = upd_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        
+        if t_ist.date() == target_date:
+            today_tasks.append(t)
+        elif t_ist.date() < target_date:
+            if t.status == "pending":
+                overdue_tasks.append(t)
+            elif upd_ist.date() == target_date:
+                # 🚀 It was due in the past but completed today! 
+                # Keep it in overdue section (it will show as completed/struck out)
+                # This satisfies "completed tasks should disappear only next day"
+                overdue_tasks.append(t)
+
+    # Combined tasks for summary calculation
+    tasks = today_tasks # We'll still call the today ones 'tasks' for legacy reasons in the response
+    overdue_count = len(overdue_tasks)
+            
+    # Include unscheduled tasks if any (though usually they have no date, handled separately?)
+    # If due_date is None, our SQL filter ^ skips them unless we allow None
+    # Let's separately fetch unscheduled if needed, but 'get_daily_plan' usually implies scheduled.
+    # Actually, current SQL `Task.due_date >= ...` excludes Nulls automatically.
+    # We should add `OR Task.due_date IS NULL` if we want unscheduled.
+    # But usually Daily Plan is time-focused.
+    
+    # Sort today's tasks
+    tasks.sort(key=lambda x: x.due_date)
+
+    # 🚀 NEW: Merge Google Calendar Data (Events + Tasks)
+    try:
+        from app.services import google_calendar_service
+        google_data = await google_calendar_service.get_google_data(
+            user, db, 
+            time_min=dt_utc_start.isoformat().replace('+00:00', 'Z'),
+            time_max=dt_utc_end.isoformat().replace('+00:00', 'Z')
+        )
+        
+        # 1. Merge Events
+        google_events = google_data.get("events", [])
+        for event in google_events:
+            # 🛡️ Skip cancelled/deleted events
+            if event.get('status') == 'cancelled':
+                continue
+                
+            start = event.get('start', {}).get('dateTime') or event.get('start', {}).get('date')
+            if not start: continue
+            
+            try:
+                from dateutil import parser
+                dt_utc = parser.parse(start)
+                if dt_utc.tzinfo is None:
+                     dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+                
+                dt_ist = dt_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+                if dt_ist.date() == target_date:
+                    tasks.append(Task(
+                        id=0, title=event.get('summary', 'Google Event'),
+                        description=event.get('description', ''),
+                        due_date=dt_utc, type="meeting", raw_text="google_event",
+                        status="pending",
+                        external_id=event.get('id'),
+                        is_external=True,
+                        user_id=user_id,
+                        created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
+                        updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
+                    ))
+            except Exception as pe:
+                logger.error(f"⚠️ Event parse error: {pe}")
+
+        # 2. Merge Google Tasks
+        google_tasks = google_data.get("tasks", [])
+        for g_task in google_tasks:
+            # 🛡️ Skip deleted or hidden tasks (Handles deletion sync)
+            if g_task.get('deleted') or g_task.get('hidden'):
+                continue
+
+            # Parse Due Date
+            due_str = g_task.get('due')
+            task_due = None
+            task_due_date_only = None
+            if due_str:
+                from dateutil import parser
+                try:
+                    task_due = parser.parse(due_str).replace(tzinfo=timezone.utc)
+                    task_due_date_only = task_due.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
+                except:
+                    pass
+
+            # Parse Completion Date
+            comp_str = g_task.get('completed')
+            completed_date_only = None
+            if comp_str:
+                try:
+                    from dateutil import parser
+                    c_utc = parser.parse(comp_str)
+                    if c_utc.tzinfo is None: c_utc = c_utc.replace(tzinfo=timezone.utc)
+                    completed_date_only = c_utc.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
+                except:
+                    pass
+
+            status = g_task.get('status', 'pending')
+            
+            # 🚀 Visibility Logic: "Stay for Today"
+            should_show = False
+            is_overdue = False
+            
+            # 1. Due today (Pending or Completed)
+            if task_due_date_only == target_date:
+                should_show = True
+            
+            # 2. Overdue and Pending (Show in Overdue section)
+            elif task_due_date_only and task_due_date_only < target_date and status != 'completed':
+                should_show = True
+                is_overdue = True
+            
+            # 3. Completed Today (Even if it was due in the past or has no due date)
+            elif completed_date_only == target_date:
+                should_show = True
+                if task_due_date_only and task_due_date_only < target_date:
+                    is_overdue = True
+
+            if not should_show:
+                continue
+
+            # Construct the Task object
+            # Combine List ID and Task ID for completion logic
+            list_id = g_task.get('_list_id', '@default')
+            g_id = g_task.get('id')
+            composed_id = f"{list_id}|{g_id}"
+
+            new_task = Task(
+                id=0, title=f"[Google] {g_task.get('title', 'Google Task')}",
+                description=g_task.get('notes', ''),
+                due_date=task_due, type="task", raw_text="google_task",
+                status=status,
+                external_id=composed_id,
+                is_external=True,
+                user_id=user_id,
+                created_at=datetime.utcnow().replace(tzinfo=timezone.utc),
+                updated_at=datetime.utcnow().replace(tzinfo=timezone.utc)
+            )
+
+            # Route to correct bucket
+            if is_overdue:
+                overdue_tasks.append(new_task)
+            else:
+                tasks.append(new_task)
+
+    except Exception as e:
+        logger.error(f"❌ Failed to merge Google data into plan: {e}")
+    
+    # Re-sort after merging (ensure we handle missing dates)
+    from datetime import datetime
+    tasks.sort(key=lambda x: x.due_date if x.due_date else datetime.min.replace(tzinfo=timezone.utc))
+    
+    # 🚀 NEW: Fetch "Upcoming" tasks (next 5 tasks after today)
+    upcoming_query = select(Task).filter(
+        Task.user_id == user_id,
+        Task.due_date > dt_utc_end, # Use dt_utc_end for strict "after today"
+        Task.status == "pending"
+    ).order_by(Task.due_date).limit(5)
+    
+    upcoming_res = await db.execute(upcoming_query)
+    upcoming_tasks = upcoming_res.scalars().all()
+    
+    logger.info(f"📊 [get_daily_plan] Found {len(tasks)} items total (Tasks + Google) and {len(upcoming_tasks)} upcoming.")
+    
+    if not tasks and not upcoming_tasks:
+        return {
+            "morning_message": f"{greeting_time}! 🙂 Your schedule is looking nice and light today.",
+            "user_name": user_name,
+            "sections": [],
+            "total_count": 0,
+            "upcoming": [],
+            "time_bound_count": 0
+        }
+    
+    sections_map = {
+        "Overdue": overdue_tasks,
+        "Morning": [],
+        "Afternoon": [],
+        "Evening": [],
+        "Night": [],
+        "Unscheduled": []
+    }
+    
+    time_bound_count = 0
+    for t in tasks:
+        if not t.due_date:
+            sections_map["Unscheduled"].append(t)
+            continue
+            
+        time_bound_count += 1
+        
+        # Convert DB time to IST for grouping
+        tz_ist = timezone(timedelta(hours=5, minutes=30))
+        t_due = t.due_date
+        if t_due.tzinfo is None:
+            t_due = t_due.replace(tzinfo=timezone.utc)
+            
+        dt_ist = t_due.astimezone(tz_ist)
+        h = dt_ist.hour
+        
+        if 5 <= h < 12:
+            sections_map["Morning"].append(t)
+        elif 12 <= h < 16:
+            sections_map["Afternoon"].append(t)
+        elif 16 <= h < 20:
+            sections_map["Evening"].append(t)
+        else:
+            sections_map["Night"].append(t)
+            
+    sections = [{"slot": k, "items": v} for k, v in sections_map.items() if len(v) > 0]
+    
+    count = len(tasks)
+    overdue_msg = f" Also, you have {overdue_count} pending tasks from before." if overdue_count > 0 else ""
+    
+    if count == 1:
+        msg = f"{greeting_time}! You have 1 task today.{overdue_msg} Let's make it count!"
+    elif count > 1:
+        msg = f"{greeting_time}! You have {count} tasks scheduled today.{overdue_msg} {time_bound_count} are time-sensitive."
+    elif overdue_count > 0:
+        msg = f"{greeting_time}! Nothing new for today, but you have {overdue_count} tasks carried over from before."
+    else:
+        msg = f"{greeting_time}! Nothing scheduled for today, but you have {len(upcoming_tasks)} upcoming tasks."
+
+    return {
+        "morning_message": msg,
+        "user_name": user_name,
+        "sections": sections,
+        "total_count": count,
+        "upcoming": upcoming_tasks,
+        "time_bound_count": time_bound_count
+    }
+
+async def get_end_of_day_summary(db: AsyncSession, user_id: int):
+    from datetime import date, datetime, time, timedelta, timezone
+    
+    # Use UTC now converted to IST
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    target_date = now_ist.date()
+    
+    # Define IST window in UTC
+    dt_ist_start = datetime.combine(target_date, time.min)
+    dt_ist_end = datetime.combine(target_date, time.max)
+    
+    dt_utc_start = (dt_ist_start - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    dt_utc_end = (dt_ist_end - timedelta(hours=5, minutes=30)).replace(tzinfo=timezone.utc)
+    
+    # Fetch all tasks for today (UTC window)
+    query = select(Task).filter(
+        Task.user_id == user_id,
+        Task.due_date >= dt_utc_start,
+        Task.due_date <= dt_utc_end
+    )
+    result = await db.execute(query)
+    tasks = result.scalars().all()
+    
+    completed = [t for t in tasks if t.status == "completed"]
+    pending = [t for t in tasks if t.status != "completed"]
+    
+    comp_count = len(completed)
+    pend_count = len(pending)
+    total = len(tasks)
+    
+    if total == 0:
+        msg = "A quiet day! No tasks were scheduled today. Enjoy your evening!"
+    elif pend_count == 0:
+        msg = f"Fantastic! You crushed all {total} tasks today. Time to celebrate and rest!"
+    elif comp_count > 0:
+        msg = f"Good job! You completed {comp_count} out of {total} tasks. {pend_count} are still pending, but you made great progress!"
+    else:
+        msg = f"Today was tough! {total} tasks are still pending. Tomorrow is a fresh start to get things done!"
+
+    return {
+        "completed_count": comp_count,
+        "pending_count": pend_count,
+        "message": msg,
+        "pending_items": pending
+    }
+
+async def get_user_insights(db: AsyncSession, user_id: int):
+    """
+    Calculate productivity metrics for the Insights screen
+    """
+    from datetime import datetime
+    
+    # helper for percentage
+    def get_pct(part, whole):
+        return int((part / whole) * 100) if whole > 0 else 0
+
+    # 1. Total Tasks
+    result = await db.execute(select(Task).filter(Task.user_id == user_id))
+    all_tasks = result.scalars().all()
+    
+    total = len(all_tasks)
+    completed = len([t for t in all_tasks if t.status == 'completed'])
+    pending = len([t for t in all_tasks if t.status == 'pending'])
+    
+    # 2. Overdue Check
+    now = datetime.now()
+    overdue = 0
+    for t in all_tasks:
+        if t.status == 'pending' and t.due_date and t.due_date < now:
+            overdue += 1
+            
+    completion_rate = get_pct(completed, total)
+    
+    # 3. Simple productivity score (arbitrary logic for fun)
+    # Score = (Completion Rate * 0.7) + (Tasks Done * 2) - (Overdue * 5)
+    # Capped at 100? No, let it be an XP points style
+    score = (completion_rate * 5) + (completed * 10) - (overdue * 20)
+    if score < 0: score = 0
+    
+    return {
+        "total_tasks": total,
+        "completed_tasks": completed,
+        "pending_tasks": pending,
+        "overdue_tasks": overdue,
+        "completion_rate": completion_rate,
+        "productivity_score": score
+    }
+
+    from app.models.notification import Notification
+    
+    db_task = await get_task(db, task_id, user_id)
+    if not db_task:
+        return None
+    
+    # 🧹 Also delete related notifications from Inbox
+    # We match by task_id in the JSON data column
+    # Since JSON matching varies by DB, we rely on fetching and filtering or simple string match if safe
+    # Or better: Add a task_id column to notifications? 
+    # For now, let's delete strictly based on the stored data payload
+    
+    # Efficient approach: Select all notifs for this user, check data['task_id']
+    # But filtering in memory is slow. 
+    # Let's rely on cascading deletes if we had a foreign key, but we don't on Notification table for task_id (it's in JSON)
+    
+    # Alternative: Select notifications where user_id matches and filter in python
+    # Ideally, we should update Notification model to have task_id.
+    # For now, we will perform a safe cleanup:
+    
+    # Fetch user's notifications
+    notifs_query = select(Notification).filter(Notification.user_id == user_id)
+    n_res = await db.execute(notifs_query)
+    all_notifs = n_res.scalars().all()
+    
+    for n in all_notifs:
+        if n.data and n.data.get("task_id") == str(task_id):
+            await db.delete(n)
+    
+    await db.delete(db_task)
+    await db.commit()
+    return db_task

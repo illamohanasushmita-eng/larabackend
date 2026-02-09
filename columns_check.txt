@@ -1,0 +1,14 @@
+Checking database: ballast.proxy.rlwy.net:48465/railway
+Columns in 'users' table:
+ - id
+ - full_name
+ - email
+ - hashed_password
+ - is_active
+ - dob
+ - gender
+ - profession
+ - google_access_token
+ - google_refresh_token
+ - google_token_expiry
+Error: 'charmap' codec can't encode character '\u2705' in position 2: character maps to <undefined>

@@ -1,7 +1,6 @@
 from app.core.groq_client import get_groq_client
 import logging
 
-<<<<<<< HEAD
 import logging
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession

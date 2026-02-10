@@ -266,9 +266,9 @@ async def process_voice_command(text: str, db: AsyncSession, user_id: int, curre
     
     2. EXTRACTION: Identify the 'intent', 'title', 'time', 'end_time', 'category' (for maps), and 'destination' (for maps).
        - **INTENT CLASSIFICATION**:
-         - "CreateTask": Add a todo or reminder.
-         - "NearbySearch": "find hospitals", "restaurants nearby", "where is the nearest gas station".
-         - "Directions": "navigate to work", "directions to home", "how do I get to the airport".
+         - "NearbySearch": Queries with "find", "search", "near", "nearest", "where is", "looking for". (e.g., "find hospitals", "restaurants nearby").
+         - "Directions": Navigation requests (e.g., "navigate to work", "how do I get to the airport").
+         - "CreateTask": Add a todo or reminder. (ONLY if not a map search).
          - "General": Chit-chat or questions.
        
        - **MAP EXTRACTION**:

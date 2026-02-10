@@ -188,11 +188,7 @@ async def generate_friendly_reminder(title: str, due_time: str, lead_mins: int) 
         logger.error(f"Error generating AI reminder: {str(e)}")
         return f"Friendly reminder: {title} at {due_time}!"
 
-<<<<<<< HEAD
 async def process_voice_command(text: str, db: AsyncSession, user_id: int, current_time: str = None) -> dict:
-=======
-async def process_voice_command(text: str, current_time: str = None) -> dict:
->>>>>>> ff1062a54a016958598ced5c8656ae11c0ea6b25
     """
     Assistant Lifecycle Processing:
     idle -> incomplete -> ready
@@ -208,7 +204,7 @@ async def process_voice_command(text: str, current_time: str = None) -> dict:
         }
 
     # Strict multi-stage prompt for Grammar & Intent
-<<<<<<< HEAD
+    # Strict multi-stage prompt for Grammar & Intent
     
     # CONTEXT INJECTION
     energy_context = "Unknown"

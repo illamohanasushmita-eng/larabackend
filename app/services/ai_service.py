@@ -24,10 +24,7 @@ def determine_energy_level(hour: int) -> str:
         return "Low (Late Night)"
 
 
-=======
-logger = logging.getLogger(__name__)
 
->>>>>>> ff1062a54a016958598ced5c8656ae11c0ea6b25
 async def ask_ai(prompt: str) -> str:
     """
     Sends user input to the Groq model llama-3.1-8b-instant

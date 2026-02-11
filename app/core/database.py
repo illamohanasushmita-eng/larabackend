@@ -28,7 +28,9 @@ engine = create_async_engine(
     echo=False,
     future=True,
     # Supabase best practice for Async components
-    connect_args={"ssl": "require"} if "localhost" not in DATABASE_URL else {}
+    connect_args={"ssl": "require"} if "localhost" not in DATABASE_URL else {},
+    pool_pre_ping=True,  # 🟢 FIX: Check connection health before using
+    pool_recycle=300     # 🟢 FIX: Recycle connections every 5 mins to avoid timeouts
 )
 
 # 5. Create Session Factory

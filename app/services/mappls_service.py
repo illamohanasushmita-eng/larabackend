@@ -12,51 +12,83 @@ class MapplsService:
     # We will use flexible URL construction.
 
     @staticmethod
+    _access_token: Optional[str] = None
+    
+    @classmethod
+    async def get_token(cls) -> Optional[str]:
+        """
+        Generates or returns a valid Mappls OAuth 2.0 token.
+        POST https://outpost.mappls.com/api/security/oauth/token
+        """
+        # If we have a static token in .env (and no client creds), use it as fallback
+        if settings.MAPPLS_ACCESS_TOKEN and not (settings.MAPPLS_CLIENT_ID and settings.MAPPLS_CLIENT_SECRET):
+            return settings.MAPPLS_ACCESS_TOKEN
+
+        if not (settings.MAPPLS_CLIENT_ID and settings.MAPPLS_CLIENT_SECRET):
+            logger.error("❌ Mappls Client ID/Secret missing!")
+            return None
+
+        # TODO: Add expiration check logic here if needed (Mappls tokens last 24h)
+        if cls._access_token:
+            return cls._access_token
+
+        url = "https://outpost.mappls.com/api/security/oauth/token"
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": settings.MAPPLS_CLIENT_ID,
+            "client_secret": settings.MAPPLS_CLIENT_SECRET
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                logger.info("🔄 Generating new Mappls Token...")
+                response = await client.post(url, data=data)
+                
+                if response.status_code == 200:
+                    token_data = response.json()
+                    cls._access_token = token_data.get("access_token")
+                    logger.info("✅ Mappls Token Generated Successfully")
+                    return cls._access_token
+                else:
+                    logger.error(f"❌ Token Gen Error {response.status_code}: {response.text}")
+                    return None
+        except Exception as e:
+            logger.error(f"❌ Token Gen Failed: {e}")
+            return None
+
+    @staticmethod
     async def search_nearby(query: str, lat: float, lng: float, radius: int = 1000) -> List[Dict[str, Any]]:
         """
         Search for places nearby using Mappls Nearby Search API.
         GET https://atlas.mappls.com/api/places/nearby/json
         """
-        if not settings.MAPPLS_ACCESS_TOKEN:
-            logger.warning("⚠️ MAPPLS_ACCESS_TOKEN is missing in settings.")
+        token = await MapplsService.get_token()
+        if not token:
             return []
 
-        # Detect Token Type
-        token = settings.MAPPLS_ACCESS_TOKEN
-        is_legacy_key = len(token) < 100 # REST Keys are ~32-36 chars; JWTs are much longer
+        # Atlas API (OAuth 2.0)
+        url = f"{MapplsService.BASE_URL_ATLAS}/nearby/json"
         
-        if is_legacy_key:
-            # Legacy REST API Endpoint
-            # https://apis.mapmyindia.com/advancedmaps/v1/<key>/nearby_search/json
-            url = f"https://apis.mapmyindia.com/advancedmaps/v1/{token}/nearby_search/json"
-            params = {
-                "keywords": query,
-                "refLocation": f"{lat},{lng}"
-            }
-            headers = {}
-        else:
-            # Atlas API (OAuth 2.0)
-            url = f"{MapplsService.BASE_URL_ATLAS}/nearby/json"
-            params = {
-                "keywords": query,
-                "refLocation": f"{lat},{lng}",
-                "radius": radius
-            }
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json"
-            }
+        # Mappls expects "keywords" for category search (e.g. "restaurants") 
+        # but treats simple keyword searches better with specific params
+        params = {
+            "keywords": query,
+            "refLocation": f"{lat},{lng}",
+            "radius": radius
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
 
         try:
             async with httpx.AsyncClient() as client:
-                logger.info(f"🗺️ Calling Mappls ({'REST' if is_legacy_key else 'Atlas'}): {query} at {lat},{lng}")
+                logger.info(f"🗺️ Calling Mappls: {query} at {lat},{lng}")
                 response = await client.get(url, params=params, headers=headers)
                 
                 if response.status_code == 200:
                     data = response.json()
-                    # Response structure:
-                    # Atlas: {"suggestedLocations": [...]}
-                    # REST: {"suggestedLocations": [...]} (Usually similar, but let's be safe)
                     return data.get("suggestedLocations", [])
                 else:
                     logger.error(f"❌ Mappls API Error {response.status_code}: {response.text}")
@@ -68,20 +100,20 @@ class MapplsService:
     @staticmethod
     async def search_places(query: str, lat: float, lng: float) -> List[Dict[str, Any]]:
         """
-        Text Search API for specific places (not just categories).
+        Text Search API for specific places.
         GET https://atlas.mappls.com/api/places/search/json
         """
-        if not settings.MAPPLS_ACCESS_TOKEN:
+        token = await MapplsService.get_token()
+        if not token:
             return []
 
         url = f"{MapplsService.BASE_URL_ATLAS}/search/json"
         params = {
             "query": query,
             "location": f"{lat},{lng}"
-            # "pod": "City" # optional
         }
         headers = {
-            "Authorization": f"Bearer {settings.MAPPLS_ACCESS_TOKEN}"
+            "Authorization": f"Bearer {token}"
         }
 
         try:

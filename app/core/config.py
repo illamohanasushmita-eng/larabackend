@@ -22,7 +22,9 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
     GOOGLE_CLIENT_ID: str | None = os.getenv("GOOGLE_CLIENT_ID")
     GOOGLE_CLIENT_SECRET: str | None = os.getenv("GOOGLE_CLIENT_SECRET")
-    MAPPLS_ACCESS_TOKEN: str | None = os.getenv("MAPPLS_ACCESS_TOKEN")
+    MAPPLS_CLIENT_ID: str | None = os.getenv("MAPPLS_CLIENT_ID")
+    MAPPLS_CLIENT_SECRET: str | None = os.getenv("MAPPLS_CLIENT_SECRET")
+    MAPPLS_ACCESS_TOKEN: str | None = os.getenv("MAPPLS_ACCESS_TOKEN") # Fallback
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
 
     model_config = SettingsConfigDict(env_file=os.path.join(os.path.dirname(__file__), "..", "..", ".env"), case_sensitive=True, extra="ignore")

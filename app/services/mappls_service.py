@@ -11,7 +11,8 @@ class MapplsService:
     # Note: Mappls APIs have various base URLs depending on the specific service (Atlas, Routing, etc.)
     # We will use flexible URL construction.
 
-    @staticmethod
+    # We will use flexible URL construction.
+
     _access_token: Optional[str] = None
     
     @classmethod

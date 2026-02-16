@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 client_secre
+.venv_new/
+.venv311/

@@ -45,6 +45,7 @@ async def process_voice(
             res["message"] = formatted_msg
             res["type"] = "map_search" # Frontend can use this to show a map UI if needed
             res["status"] = "ready" # Ensure it's ready
+            res["nearby_places"] = places[:5]  # Return top 5 places for UI display
         else:
             res["message"] = "I can find places for you, but I need your location access."
             res["status"] = "incomplete"

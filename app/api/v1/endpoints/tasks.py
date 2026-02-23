@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 from app.core.database import get_db
 from app.schemas.task import TaskCreate, TaskUpdate, TaskResponse, PlanResponse, SummaryResponse, VoiceProcessRequest, VoiceProcessResponse
-from app.services import task_service, ai_service, mappls_service
+from app.services import task_service, ai_service, google_maps_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,21 +31,21 @@ async def process_voice(
 ):
     res = await ai_service.process_voice_command(request.text, db, current_user.id, request.current_time)
     
-    # 🗺️ MAPPLS INTEGRATION
+    # 🗺️ GOOGLE MAPS INTEGRATION
     intent = res.get("intent")
     
     if intent == "NearbySearch":
-        category = res.get("category")
+        category = res.get("category", "places")
         if request.lat and request.lng:
-            logger.info(f"🗺️ Executing Nearby Search for '{category}' at {request.lat}, {request.lng}")
-            places = await mappls_service.MapplsService.search_nearby(category, request.lat, request.lng)
+            logger.info(f"🗺️ Executing Google Nearby Search for '{category}' at {request.lat}, {request.lng}")
+            places = await google_maps_service.GoogleMapsService.search_nearby(category, request.lat, request.lng)
             
-            # Format conversational response
-            formatted_msg = mappls_service.MapplsService.format_places_response(places, category)
+            # Format conversational TTS response
+            formatted_msg = google_maps_service.GoogleMapsService.format_places_response(places, category)
             res["message"] = formatted_msg
-            res["type"] = "map_search" # Frontend can use this to show a map UI if needed
-            res["status"] = "ready" # Ensure it's ready
-            res["nearby_places"] = places[:5]  # Return top 5 places for UI display
+            res["type"] = "map_search"
+            res["status"] = "ready"
+            res["nearby_places"] = places  # Top 5 already filtered in service
         else:
             res["message"] = "I can find places for you, but I need your location access."
             res["status"] = "incomplete"

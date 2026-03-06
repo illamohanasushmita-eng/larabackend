@@ -268,7 +268,9 @@ async def process_voice_command(text: str, db: AsyncSession, user_id: int, curre
        - **INTENT CLASSIFICATION**:
          - "NearbySearch": Queries with "find", "search", "near", "nearest", "where is", "looking for". (e.g., "find hospitals", "restaurants nearby").
          - "Directions": Navigation requests (e.g., "navigate to work", "how do I get to the airport").
-         - "CreateTask": Add a todo or reminder. (ONLY if not a map search).
+         - "CreateTask": Add a todo or reminder. (ONLY if not a map search or booking).
+         - "BookHotel": User wants to book a hotel, room, or accommodation. (e.g., "book a hotel in Chennai", "reserve a room for tonight").
+         - "BookAppointment": User wants to book an appointment, meeting, or service. (e.g., "book a doctor appointment", "schedule a salon visit").
          - "General": Chit-chat or questions.
        
        - **MAP EXTRACTION**:
@@ -306,18 +308,50 @@ async def process_voice_command(text: str, db: AsyncSession, user_id: int, curre
       "type": "map_search",
       "message": "Searching for hospitals nearby..."
     }}
+
+    Example 3 (Book Hotel):
+    Input: "book a hotel in Chennai for tomorrow"
+    Output: {{
+      "status": "ready",
+      "intent": "BookHotel",
+      "title": "Book Hotel in Chennai",
+      "corrected_sentence": "You want to book a hotel in Chennai for tomorrow.",
+      "time": null,
+      "end_time": null,
+      "location": "Chennai",
+      "date": "tomorrow",
+      "type": "booking",
+      "message": "Sure! I'll have the AI agent call and book a hotel in Chennai for tomorrow. Please confirm your phone number."
+    }}
+
+    Example 4 (Book Appointment):
+    Input: "book a doctor appointment tomorrow at 10am"
+    Output: {{
+      "status": "ready",
+      "intent": "BookAppointment",
+      "title": "Doctor Appointment",
+      "corrected_sentence": "You want to book a doctor appointment tomorrow at 10:00 AM.",
+      "time": "2026-01-29T10:00:00",
+      "end_time": null,
+      "location": null,
+      "date": "tomorrow",
+      "type": "booking",
+      "message": "Got it! I'll have the AI agent call and book a doctor appointment for tomorrow at 10 AM."
+    }}
     
     Return ONLY a JSON object:
     {{
       "status": "ready" | "incomplete",
-      "intent": "CreateTask" | "NearbySearch" | "Directions" | "ReverseGeocode" | "General",
+      "intent": "CreateTask" | "NearbySearch" | "Directions" | "ReverseGeocode" | "BookHotel" | "BookAppointment" | "General",
       "title": "Clean Short Title",
       "corrected_sentence": "Full polished sentence in 2nd person",
       "time": "ISO 8601 string or null",
       "end_time": "ISO 8601 string or null",
       "category": "map search keyword or null",
       "destination": "navigation target or null",
-      "type": "task" | "reminder" | "map_search" | "navigation",
+      "location": "booking location or null",
+      "date": "booking date string or null",
+      "type": "task" | "reminder" | "map_search" | "navigation" | "booking",
       "message": "Spoken assistant response"
     }}
     """

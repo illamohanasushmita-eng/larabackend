@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     GOOGLE_MAPS_API_KEY: str | None = os.getenv("GOOGLE_MAPS_API_KEY")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7 # 7 days
 
+    # Ringg.ai
+    RINGGAI_API_KEY: str | None = os.getenv("RINGGAI_API_KEY")
+    RINGGAI_AGENT_ID: str = os.getenv("RINGGAI_AGENT_ID", "ee64d3ba-8e74-4f3d-bf7a-88185da61a2c")
+    RINGGAI_NUMBER_ID: str | None = os.getenv("RINGGAI_NUMBER_ID")
+
     model_config = SettingsConfigDict(env_file=os.path.join(os.path.dirname(__file__), "..", "..", ".env"), case_sensitive=True, extra="ignore")
 
     def __init__(self, **data):
